@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from aimai_ocl.adapters import build_agents
-from aimai_ocl.attribution import CONTROLLED_ROLES, ValueConfig, compute_V, compute_shapley, run_masked_episode
+from aimai_ocl.attribution import (
+    CONTROLLED_ROLES,
+    ValueConfig,
+    compute_V,
+    compute_shapley,
+    run_masked_episode
+)
+from aimai_ocl.baselines.toolguard_commerce.adapter import create_adapter
 from aimai_ocl.config import load_config, load_experiment_yaml
 from aimai_ocl.control import AUDIT_FULL, AUDIT_MINIMAL, AUDIT_OFF, AuditPolicy, ControlConfig
 from aimai_ocl.coordinator import Coordinator
@@ -458,7 +465,31 @@ def _run_one_episode(
         risk_rewrite_threshold=arm.risk_rewrite_threshold,
         risk_block_threshold=arm.risk_block_threshold,
     ) if needs_control_config else None
+    toolguard_adapter = None
 
+    if arm.baseline_mode == "toolguard_commerce":
+        guard_dir = run_config.toolguard_generated_guard_dir
+        visibility = run_config.toolguard_buyer_max_price_visibility
+
+        if not guard_dir:
+            raise RuntimeError(
+                "toolguard_commerce requires "
+                "toolguard_generated_guard_dir."
+            )
+
+        if visibility != "platform_visible":
+            raise RuntimeError(
+                "toolguard_buyer_max_price_visibility must be "
+                "'platform_visible'."
+            )
+
+        toolguard_adapter = create_adapter(
+            guard_dir=guard_dir,
+            retry_budget=run_config.toolguard_retry_budget,
+            buyer_max_price_visibility=visibility,
+            arm=arm.name,
+            episode_key=f"{arm.name}-seed-{run_config.seed}",
+        )
     return run_episode(
         env_id=run_config.env_id,
         buyer_agent=buyer,
@@ -481,6 +512,11 @@ def _run_one_episode(
         audit_policy=audit,
         enable_replan=arm.enable_replan,
         baseline_mode=arm.baseline_mode,
+        seller_context_mode=arm.seller_context_mode,
+        toolguard_adapter=toolguard_adapter,
+        toolguard_buyer_max_price_visibility=(
+            run_config.toolguard_buyer_max_price_visibility
+        ),
     )
 
 
