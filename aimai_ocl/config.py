@@ -20,6 +20,9 @@ _ENV_MAP: dict[str, str] = {
     "AIMAI_BASE_URL": "base_url",
     "OPENAI_BASE_URL": "base_url",
     "AIMAI_API_SLEEP_SEC": "api_sleep_sec",
+    "AIMAI_TOOLGUARD_DIR": "toolguard_generated_guard_dir",
+    "AIMAI_TOOLGUARD_BUYER_MAX_VISIBILITY": "toolguard_buyer_max_price_visibility",
+    "AIMAI_TOOLGUARD_RETRY_BUDGET": "toolguard_retry_budget",
 }
 
 
@@ -107,4 +110,11 @@ def _to_run_config(values: dict[str, Any]) -> RunConfig:
         product_name=_get("product_name", str, "Winter Jacket"),
         product_price=_get("product_price", float, 180.0),
         user_profile=_get("user_profile", str, "Budget-conscious and compares options before buying."),
+        toolguard_generated_guard_dir=_get(
+            "toolguard_generated_guard_dir", str, None
+        ),
+        toolguard_buyer_max_price_visibility=_get(
+            "toolguard_buyer_max_price_visibility", str, None
+        ),
+        toolguard_retry_budget=_get("toolguard_retry_budget", int, 1),
     )
