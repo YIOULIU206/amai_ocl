@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 toolguard = [
+    "mellea==0.0.3",
     "toolguard @ git+https://github.com/IBM/tool_guard.git@20e21db4c275d79f8d7bf33ffb985d0b45f786f5",
 ]
 
