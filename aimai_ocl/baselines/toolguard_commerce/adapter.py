@@ -15,13 +15,13 @@ Deliberate limitations of this external baseline:
 * a second violation returns None, i.e. the seller round becomes a no-op,
 * prices are never clamped and text is never rewritten: the executed text is
   byte-identical to a text the seller produced,
-* no OCL component is used - this module must not import aimai_ocl.control,
-  and it never calls resolve_escalation() or any deterministic repair.
+* no internal OCL enforcement component is used, and this baseline never
+  performs escalation, deterministic repair, or multi-level control.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 
@@ -159,6 +159,11 @@ class ToolGuardCommerceAdapter:
             draft or None (no-op). It is never rewritten or clamped.
         """
         self._logger.buyer_max_price_visibility = policy_state.buyer_max_price_visibility
+        # The round passed by runner.py is authoritative for this seller turn.
+        # Keep the immutable platform policy state consistent with it before
+        # constructing the ToolGuard argument payload.
+        if int(policy_state.round_id) != int(round_id):
+            policy_state = replace(policy_state, round_id=int(round_id))
         start_index = len(self._logger.events)
         candidate = _normalize(text)
         if candidate is None:
