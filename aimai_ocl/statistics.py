@@ -345,6 +345,69 @@ def collect_executed_violation_stats(
         "has_executed_violation": failed_constraint_count > 0,
         "executed_violation_type_counts": violation_type_counts,
     }
+def collect_toolguard_stats(trace: EpisodeTrace) -> dict[str, Any]:
+    """Collect ToolGuard-Commerce metrics from one completed trace.
+
+    These metrics remain separate from the existing OCL violation and
+    guard-trigger metrics.
+    """
+    metadata = trace.metadata if isinstance(trace.metadata, dict) else {}
+    payload = metadata.get("toolguard_commerce")
+
+    if not isinstance(payload, dict):
+        totals: dict[str, Any] = {}
+    else:
+        raw_totals = payload.get("totals")
+        totals = raw_totals if isinstance(raw_totals, dict) else {}
+
+    proposal_count = _as_int(totals.get("proposals"))
+    detected_count = _as_int(totals.get("detected"))
+    blocked_count = _as_int(totals.get("blocked"))
+    intercepted_count = _as_int(totals.get("intercepted"))
+    retry_attempted_count = _as_int(totals.get("retry_attempted"))
+    revision_passed_count = _as_int(totals.get("revision_passed"))
+    retry_exhausted_count = _as_int(totals.get("retry_exhausted"))
+    candidate_selected_count = _as_int(
+        totals.get("candidate_selected_for_execution")
+    )
+    reached_env_count = _as_int(totals.get("reached_env"))
+    retry_generation_calls = _as_int(
+        totals.get("retry_seller_generation_calls")
+    )
+    guard_runtime_sec = _as_float(totals.get("guard_runtime_sec")) or 0.0
+
+    block_rate = (
+        blocked_count / proposal_count
+        if proposal_count > 0
+        else 0.0
+    )
+    intercept_rate = (
+        intercepted_count / proposal_count
+        if proposal_count > 0
+        else 0.0
+    )
+    revision_pass_rate = (
+        revision_passed_count / retry_attempted_count
+        if retry_attempted_count > 0
+        else 0.0
+    )
+
+    return {
+        "toolguard_proposal_count": proposal_count,
+        "toolguard_detected_count": detected_count,
+        "toolguard_blocked_count": blocked_count,
+        "toolguard_intercepted_count": intercepted_count,
+        "toolguard_retry_attempted_count": retry_attempted_count,
+        "toolguard_revision_passed_count": revision_passed_count,
+        "toolguard_retry_exhausted_count": retry_exhausted_count,
+        "toolguard_candidate_selected_count": candidate_selected_count,
+        "toolguard_reached_env_count": reached_env_count,
+        "toolguard_retry_seller_generation_calls": retry_generation_calls,
+        "toolguard_guard_runtime_sec": guard_runtime_sec,
+        "toolguard_block_rate": block_rate,
+        "toolguard_intercept_rate": intercept_rate,
+        "toolguard_revision_pass_rate": revision_pass_rate,
+    }
 
 
 def summarize_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -389,7 +452,72 @@ def summarize_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             sum(_as_int(row.get("executed_failed_constraint_count")) for row in rows)
         )
         total_escalations = int(sum(_as_int(row.get("escalation_count")) for row in rows))
+        total_toolguard_proposals = int(
+            sum(_as_int(row.get("toolguard_proposal_count")) for row in rows)
+        )
+        total_toolguard_detected = int(
+            sum(_as_int(row.get("toolguard_detected_count")) for row in rows)
+        )
+        total_toolguard_blocked = int(
+            sum(_as_int(row.get("toolguard_blocked_count")) for row in rows)
+        )
+        total_toolguard_intercepted = int(
+            sum(
+                _as_int(row.get("toolguard_intercepted_count"))
+                for row in rows
+            )
+        )
+        total_toolguard_retries = int(
+            sum(
+                _as_int(row.get("toolguard_retry_attempted_count"))
+                for row in rows
+            )
+        )
+        total_toolguard_revision_passed = int(
+            sum(
+                _as_int(row.get("toolguard_revision_passed_count"))
+                for row in rows
+            )
+        )
+        total_toolguard_retry_exhausted = int(
+            sum(
+                _as_int(row.get("toolguard_retry_exhausted_count"))
+                for row in rows
+            )
+        )
+        total_toolguard_reached_env = int(
+            sum(
+                _as_int(row.get("toolguard_reached_env_count"))
+                for row in rows
+            )
+        )
+        total_toolguard_guard_runtime_sec = float(
+            sum(
+                _as_float(row.get("toolguard_guard_runtime_sec")) or 0.0
+                for row in rows
+            )
+        )
 
+        toolguard_block_rate = (
+            total_toolguard_blocked / total_toolguard_proposals
+            if total_toolguard_proposals > 0
+            else 0.0
+        )
+        toolguard_intercept_rate = (
+            total_toolguard_intercepted / total_toolguard_proposals
+            if total_toolguard_proposals > 0
+            else 0.0
+        )
+        toolguard_revision_pass_rate = (
+            total_toolguard_revision_passed / total_toolguard_retries
+            if total_toolguard_retries > 0
+            else 0.0
+        )
+        avg_toolguard_guard_runtime_sec = (
+            total_toolguard_guard_runtime_sec / total_toolguard_proposals
+            if total_toolguard_proposals > 0
+            else 0.0
+        )
         violation_type_counts: dict[str, int] = {}
         executed_violation_type_counts: dict[str, int] = {}
         for row in rows:
@@ -419,6 +547,29 @@ def summarize_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "total_failed_constraints": total_failed_constraints,
                 "total_executed_failed_constraints": total_executed_failed_constraints,
                 "total_escalations": total_escalations,
+                "total_toolguard_proposals": total_toolguard_proposals,
+                "total_toolguard_detected": total_toolguard_detected,
+                "total_toolguard_blocked": total_toolguard_blocked,
+                "total_toolguard_intercepted": total_toolguard_intercepted,
+                "total_toolguard_retries": total_toolguard_retries,
+                "total_toolguard_revision_passed": (
+                    total_toolguard_revision_passed
+                ),
+                "total_toolguard_retry_exhausted": (
+                    total_toolguard_retry_exhausted
+                ),
+                "total_toolguard_reached_env": total_toolguard_reached_env,
+                "total_toolguard_guard_runtime_sec": (
+                    total_toolguard_guard_runtime_sec
+                ),
+                "toolguard_block_rate": toolguard_block_rate,
+                "toolguard_intercept_rate": toolguard_intercept_rate,
+                "toolguard_revision_pass_rate": (
+                    toolguard_revision_pass_rate
+                ),
+                "avg_toolguard_guard_runtime_sec": (
+                    avg_toolguard_guard_runtime_sec
+                ),
                 "violation_type_counts": violation_type_counts,
                 "executed_violation_type_counts": executed_violation_type_counts,
             }

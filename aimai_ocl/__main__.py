@@ -29,6 +29,7 @@ from aimai_ocl.runner import run_episode
 from aimai_ocl.statistics import (
     bootstrap_ci_mean,
     collect_executed_violation_stats,
+    collect_toolguard_stats,
     collect_violation_stats,
     sign_flip_pvalues,
     success_from_status,
@@ -179,12 +180,14 @@ def _run_batch(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> in
             trace, info = _run_one_episode(rc, arm)
             elapsed = time.time() - t0
             vs = collect_violation_stats(trace)
+            toolguard_stats = collect_toolguard_stats(trace)
             records.append({
                 "arm": arm.name, "episode_index": i, "seed": seed,
                 "success": success_from_status(info.get("status")),
                 "round": info.get("round"), "seller_reward": info.get("seller_reward"),
                 "latency_sec": round(elapsed, 2), "audit_events": len(trace.events),
                 **vs,
+                **toolguard_stats,
             })
             print(f"  [{arm.name}] episode {i}: status={info.get('status')}, {elapsed:.1f}s")
 
@@ -259,6 +262,7 @@ def _run_benchmark(run_config: RunConfig, exp: dict, args: argparse.Namespace) -
             elapsed = time.time() - t0
             success = success_from_status(info.get("status"))
             vs = collect_violation_stats(trace)
+            toolguard_stats = collect_toolguard_stats(trace)
             executed_vs = collect_executed_violation_stats(
                 trace,
                 buyer_max_price=rc.buyer_max_price,
@@ -271,7 +275,9 @@ def _run_benchmark(run_config: RunConfig, exp: dict, args: argparse.Namespace) -
                 "latency_sec": round(elapsed, 2), "audit_events": len(trace.events),
                 "valid_success": int(success and not executed_vs["has_executed_violation"]),
                 "unsafe_success": int(success and executed_vs["has_executed_violation"]),
-                **vs, **executed_vs,
+                **vs,
+                **executed_vs,
+                **toolguard_stats,
             })
             print(f"  [{arm.name}] status={info.get('status')}, reward={info.get('seller_reward')}, {elapsed:.1f}s")
             
@@ -341,11 +347,14 @@ def _run_paired(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> i
             trace, info = _run_one_episode(rc, arm)
             elapsed = time.time() - t0
             vs = collect_violation_stats(trace)
+            toolguard_stats = collect_toolguard_stats(trace)
             records.append({
                 "arm": arm.name, "episode_index": i, "seed": seed,
                 "success": success_from_status(info.get("status")),
                 "round": info.get("round"), "seller_reward": info.get("seller_reward"),
-                "latency_sec": round(elapsed, 2), **vs,
+                "latency_sec": round(elapsed, 2),
+                **vs,
+                **toolguard_stats,
             })
 
     summaries = summarize_records(records)
