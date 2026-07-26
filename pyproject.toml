@@ -11,11 +11,20 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
-[tool.setuptools]
-packages = ["aimai_ocl"]
+[project.optional-dependencies]
+toolguard = [
+    "toolguard @ git+https://github.com/IBM/tool_guard.git@20e21db4c275d79f8d7bf33ffb985d0b45f786f5",
+]
+
+[tool.setuptools.packages.find]
+include = ["aimai_ocl*"]
 
 [tool.setuptools.package-data]
-aimai_ocl = ["py.typed"]
+aimai_ocl = [
+    "py.typed",
+    "baselines/toolguard_commerce/policies/*.md",
+    "baselines/toolguard_commerce/specs/*.yaml",
+]
 
 [tool.setuptools.data-files]
 "configs" = ["configs/*.yaml", "configs/**/*.yaml"]
