@@ -1,0 +1,84 @@
+# Readable mirror of the ToolGuard-Commerce tool specification.
+#
+# SOURCE OF TRUTH: aimai_ocl/baselines/toolguard_commerce/tools.py
+# This YAML file is documentation only. The ToolGuard build consumes the Python
+# callables returned by tools.tool_functions(); nothing reads this file at run
+# time. Drift is detected with:
+#
+#   python scripts/build_toolguard_commerce.py --verify-mirror
+#
+# The check compares this file with tools.tool_spec() after normalizing
+# whitespace inside description strings.
+
+app_name: commerce_negotiation
+
+tools:
+  - name: execute_seller_action
+    description: >-
+      Execute one seller action in a single-product price negotiation. The
+      platform calls this tool after the seller agent produced a candidate
+      message and before that message is handed to the negotiation
+      environment. The call is either allowed unchanged or blocked; the tool
+      never edits, clamps, or rewrites the seller message.
+    platform_only_arguments:
+      - buyer_max_price
+    parameters:
+      title: ExecuteSellerActionArgs
+      type: object
+      additionalProperties: false
+      properties:
+        intent:
+          type: string
+          description: >-
+            Coarse seller intent parsed from the draft message: one of
+            negotiate_price, accept_deal, reject_deal, request_info,
+            explain_policy, escalate, tool_call, other.
+        proposed_price:
+          anyOf:
+            - type: number
+            - type: "null"
+          description: >-
+            Explicit price in USD proposed by the seller in this message, or
+            null when the message contains no explicit price.
+        actor_role:
+          type: string
+          description: >-
+            Role of the acting agent. Only the seller role may execute this
+            tool.
+        message:
+          type: string
+          description: >-
+            Verbatim seller draft message that would be sent to the buyer.
+        round_id:
+          type: integer
+          description: >-
+            Zero-based negotiation round index of this action.
+        seller_min_price:
+          anyOf:
+            - type: number
+            - type: "null"
+          description: >-
+            Seller floor in USD: the lowest price the seller is permitted to
+            offer or accept.
+        buyer_max_price:
+          anyOf:
+            - type: number
+            - type: "null"
+          description: >-
+            Platform-visible buyer budget cap in USD. Available to the platform
+            guard only; it is never disclosed to the seller agent.
+        product_price:
+          anyOf:
+            - type: number
+            - type: "null"
+          description: >-
+            List price in USD of the single product under negotiation.
+      required:
+        - intent
+        - proposed_price
+        - actor_role
+        - message
+        - round_id
+        - seller_min_price
+        - buyer_max_price
+        - product_price
