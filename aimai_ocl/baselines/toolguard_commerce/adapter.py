@@ -1,0 +1,370 @@
+"""ToolGuard-Commerce adapter: guard the seller action before execution.
+
+Placement inside one negotiation round:
+
+    seller_agent.respond()
+      -> ToolGuardCommerceAdapter.process_seller_turn()   (ALLOW / BLOCK)
+      -> trace.metadata["executed_seller_actions"]
+      -> EnvAdapter.step()
+      -> env.step()
+
+Deliberate limitations of this external baseline:
+
+* the guard has two outcomes only, ALLOW and BLOCK,
+* a blocked draft may be revised by the same seller LLM exactly once,
+* a second violation returns None, i.e. the seller round becomes a no-op,
+* prices are never clamped and text is never rewritten: the executed text is
+  byte-identical to a text the seller produced,
+* no internal OCL enforcement component is used, and this baseline never
+  performs escalation, deterministic repair, or multi-level control.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from time import perf_counter
+from typing import Any, Callable, Mapping, Sequence
+
+from aimai_ocl.adapters import raw_action_from_text
+from aimai_ocl.baselines.toolguard_commerce.event_logger import (
+    BASELINE_NAME,
+    ToolGuardEventLogger,
+)
+from aimai_ocl.baselines.toolguard_commerce.policy_state import (
+    PlatformPolicyState,
+    make_proposal_id,
+    sanitize_violation_feedback,
+)
+from aimai_ocl.baselines.toolguard_commerce.retry_policy import RetryPolicy
+from aimai_ocl.baselines.toolguard_commerce.runtime import (
+    GuardExecutionError,
+    GuardUnavailableError,
+    NoLookupInvoker,
+    UnsupportedGuardLookupError,
+    is_policy_violation,
+    load_commerce_guards,
+    policy_violation_message,
+)
+from aimai_ocl.baselines.toolguard_commerce.tools import COMMERCE_TOOL_NAME
+from aimai_ocl.schemas import ActionRole, AuditEvent, RawAction
+
+GUARD_DECISION_ALLOW = "ALLOW"
+GUARD_DECISION_BLOCK = "BLOCK"
+
+
+@dataclass(frozen=True)
+class GuardVerdict:
+    """Outcome of one guard evaluation."""
+
+    allowed: bool
+    decision: str
+    reason: str | None
+    runtime_sec: float
+
+
+@dataclass
+class SellerTurnOutcome:
+    """Result of guarding one seller turn."""
+
+    text: str | None
+    proposal_id: str | None
+    decisions: list[str] = field(default_factory=list)
+    events: list[AuditEvent] = field(default_factory=list)
+    retry_seller_generation_calls: int = 0
+    attempts: int = 0
+    no_op: bool = False
+
+
+class ToolGuardCommerceAdapter:
+    """Run the generated ToolGuard guard on candidate seller actions."""
+
+    def __init__(
+        self,
+        *,
+        guard_runtime: Any,
+        invoker: Any | None = None,
+        retry_policy: RetryPolicy | None = None,
+        logger: ToolGuardEventLogger | None = None,
+        tool_name: str = COMMERCE_TOOL_NAME,
+        parse_action: Callable[..., RawAction] = raw_action_from_text,
+        episode_key: str = "episode",
+        arm: str = BASELINE_NAME,
+    ) -> None:
+        if guard_runtime is None:
+            raise GuardUnavailableError(
+                "ToolGuard-Commerce requires a generated guard runtime; refusing "
+                "to run without a guard (fail closed)."
+            )
+        if not callable(getattr(guard_runtime, "check_toolcall", None)):
+            raise GuardUnavailableError(
+                "Guard runtime does not expose check_toolcall(); refusing to run."
+            )
+        self._guard_runtime = guard_runtime
+        self._invoker = invoker if invoker is not None else NoLookupInvoker()
+        self._retry_policy = retry_policy if retry_policy is not None else RetryPolicy()
+        self._tool_name = tool_name
+        self._parse_action = parse_action
+        self._episode_key = str(episode_key)
+        self._arm = str(arm)
+        self._logger = logger if logger is not None else ToolGuardEventLogger(
+            tool_name=tool_name,
+            retry_budget=self._retry_policy.budget,
+            arm=self._arm,
+            episode_key=self._episode_key,
+        )
+        # Guard argument payloads, in call order (inspected by tests).
+        self.guard_argument_log: list[dict[str, Any]] = []
+
+    # -- public API -------------------------------------------------------
+    @property
+    def logger(self) -> ToolGuardEventLogger:
+        return self._logger
+
+    @property
+    def retry_policy(self) -> RetryPolicy:
+        return self._retry_policy
+
+    @property
+    def events(self) -> list[AuditEvent]:
+        return self._logger.events
+
+    def process_seller_turn(
+        self,
+        *,
+        text: str | None,
+        seller_history: Sequence[Any] | None,
+        observation: Mapping[str, Any] | None,
+        policy_state: PlatformPolicyState,
+        actor_id: str,
+        round_id: int,
+        seller_respond: Callable[..., Any] | None = None,
+    ) -> SellerTurnOutcome:
+        """Guard one seller turn and return the text that may reach the env.
+
+        Input:
+            text: First seller draft, already generated by the seller agent.
+            seller_history: History used for that generation. Only a copy of it
+                is ever used for the revision request.
+            observation: Environment observation; the seller revision receives
+                this state (with platform-only keys removed) and nothing else.
+            policy_state: Platform-side state. It carries the platform-visible
+                buyer budget cap for the guard.
+            actor_id: Seller actor id.
+            round_id: Negotiation round index.
+            seller_respond: The same seller LLM callable used for the first
+                draft. When omitted, no revision is attempted.
+
+        Output:
+            SellerTurnOutcome. Its text is either byte-identical to a seller
+            draft or None (no-op). It is never rewritten or clamped.
+        """
+        self._logger.buyer_max_price_visibility = policy_state.buyer_max_price_visibility
+        # The round passed by runner.py is authoritative for this seller turn.
+        # Keep the immutable platform policy state consistent with it before
+        # constructing the ToolGuard argument payload.
+        if int(policy_state.round_id) != int(round_id):
+            policy_state = replace(policy_state, round_id=int(round_id))
+        start_index = len(self._logger.events)
+        candidate = _normalize(text)
+        if candidate is None:
+            return SellerTurnOutcome(
+                text=None,
+                proposal_id=None,
+                decisions=[],
+                events=[],
+                retry_seller_generation_calls=0,
+                attempts=0,
+                no_op=True,
+            )
+
+        attempt = 0
+        extra_generations = 0
+        chain_id: str | None = None
+        decisions: list[str] = []
+
+        while True:
+            proposal_id = make_proposal_id(
+                episode_key=self._episode_key,
+                arm=self._arm,
+                round_id=round_id,
+                attempt=attempt,
+                actor_id=actor_id,
+                text=candidate,
+            )
+            if chain_id is None:
+                chain_id = proposal_id
+            record = self._logger.register_proposal(
+                proposal_id=proposal_id,
+                chain_id=chain_id,
+                round_id=round_id,
+                attempt=attempt,
+                actor_id=actor_id,
+                text=candidate,
+            )
+            raw = self._parse_action(actor_id, ActionRole.SELLER, candidate)
+            verdict = self._evaluate(
+                raw=raw, candidate=candidate, policy_state=policy_state
+            )
+            decisions.append(verdict.decision)
+            self._logger.record_guard_result(
+                record,
+                allowed=verdict.allowed,
+                decision=verdict.decision,
+                reason=verdict.reason,
+                runtime_sec=verdict.runtime_sec,
+                raw_action=raw,
+            )
+
+            if verdict.allowed:
+                self._logger.record_selected(record, text=candidate, raw_action=raw)
+                return SellerTurnOutcome(
+                    text=candidate,
+                    proposal_id=proposal_id,
+                    decisions=decisions,
+                    events=self._logger.events[start_index:],
+                    retry_seller_generation_calls=extra_generations,
+                    attempts=attempt + 1,
+                    no_op=False,
+                )
+
+            can_retry = seller_respond is not None and self._retry_policy.allows_retry(
+                extra_generations
+            )
+            if not can_retry:
+                self._logger.record_no_op(record, raw_action=raw)
+                return SellerTurnOutcome(
+                    text=None,
+                    proposal_id=None,
+                    decisions=decisions,
+                    events=self._logger.events[start_index:],
+                    retry_seller_generation_calls=extra_generations,
+                    attempts=attempt + 1,
+                    no_op=True,
+                )
+
+            feedback = sanitize_violation_feedback(
+                verdict.reason, buyer_max_price=policy_state.buyer_max_price
+            )
+            retry_history = self._retry_policy.build_retry_history(
+                seller_history, feedback, round_id=round_id
+            )
+            self._logger.record_retry(record)
+            extra_generations += 1
+            revision = _normalize(
+                seller_respond(
+                    conversation_history=retry_history,
+                    current_state=policy_state.seller_visible_state(observation),
+                )
+            )
+            if revision is None:
+                self._logger.record_no_op(record, raw_action=raw)
+                return SellerTurnOutcome(
+                    text=None,
+                    proposal_id=None,
+                    decisions=decisions,
+                    events=self._logger.events[start_index:],
+                    retry_seller_generation_calls=extra_generations,
+                    attempts=attempt + 1,
+                    no_op=True,
+                )
+            attempt += 1
+            candidate = revision
+
+    def mark_reached_env(self, proposal_id: str | None) -> None:
+        """Flag the proposal whose text was actually passed to env.step()."""
+        self._logger.mark_reached_env(proposal_id)
+
+    def export(self) -> dict[str, Any]:
+        """Metrics payload stored in the episode trace metadata."""
+        return self._logger.export()
+
+    # -- internals --------------------------------------------------------
+    def _evaluate(
+        self,
+        *,
+        raw: RawAction,
+        candidate: str,
+        policy_state: PlatformPolicyState,
+    ) -> GuardVerdict:
+        """Call the generated guard once and map the result to ALLOW/BLOCK."""
+        intent = getattr(raw.intent, "value", str(raw.intent))
+        arguments = policy_state.guard_arguments(
+            intent=intent,
+            proposed_price=raw.proposed_price,
+            actor_role=ActionRole.SELLER.value,
+            message=candidate,
+        )
+        self.guard_argument_log.append(dict(arguments))
+        started = perf_counter()
+        try:
+            self._guard_runtime.check_toolcall(self._tool_name, arguments, self._invoker)
+        except UnsupportedGuardLookupError:
+            # Fail closed: a guard that needs auxiliary lookups is unusable.
+            raise
+        except Exception as exc:
+            elapsed = perf_counter() - started
+            if is_policy_violation(exc):
+                return GuardVerdict(
+                    allowed=False,
+                    decision=GUARD_DECISION_BLOCK,
+                    reason=policy_violation_message(exc),
+                    runtime_sec=elapsed,
+                )
+            raise GuardExecutionError(
+                "ToolGuard guard for tool "
+                + repr(self._tool_name)
+                + " failed with a non-policy error: "
+                + repr(exc)
+            ) from exc
+        elapsed = perf_counter() - started
+        return GuardVerdict(
+            allowed=True,
+            decision=GUARD_DECISION_ALLOW,
+            reason=None,
+            runtime_sec=elapsed,
+        )
+
+
+def create_adapter(
+    *,
+    guard_dir: str,
+    retry_budget: int = 1,
+    buyer_max_price_visibility: str = "platform_visible",
+    arm: str = BASELINE_NAME,
+    episode_key: str = "episode",
+    tool_name: str = COMMERCE_TOOL_NAME,
+) -> ToolGuardCommerceAdapter:
+    """Load generated guards and build an adapter, failing closed.
+
+    Raises:
+        GuardUnavailableError: If the generated guards are missing or the
+            pinned toolguard package is not importable.
+    """
+    guard_runtime = load_commerce_guards(guard_dir, tool_name=tool_name)
+    retry_policy = RetryPolicy(budget=int(retry_budget))
+    logger = ToolGuardEventLogger(
+        tool_name=tool_name,
+        retry_budget=retry_policy.budget,
+        buyer_max_price_visibility=buyer_max_price_visibility,
+        arm=arm,
+        episode_key=episode_key,
+    )
+    return ToolGuardCommerceAdapter(
+        guard_runtime=guard_runtime,
+        invoker=NoLookupInvoker(),
+        retry_policy=retry_policy,
+        logger=logger,
+        tool_name=tool_name,
+        episode_key=episode_key,
+        arm=arm,
+    )
+
+
+def _normalize(text: Any) -> str | None:
+    """Normalize a seller draft: strip, and map empty text to None."""
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    return stripped or None

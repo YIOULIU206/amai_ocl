@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from aimai_ocl.adapters import build_agents
-from aimai_ocl.attribution import CONTROLLED_ROLES, ValueConfig, compute_V, compute_shapley, run_masked_episode
+from aimai_ocl.attribution import (
+    CONTROLLED_ROLES,
+    ValueConfig,
+    compute_V,
+    compute_shapley,
+    run_masked_episode
+)
+from aimai_ocl.baselines.toolguard_commerce.adapter import create_adapter
 from aimai_ocl.config import load_config, load_experiment_yaml
 from aimai_ocl.control import AUDIT_FULL, AUDIT_MINIMAL, AUDIT_OFF, AuditPolicy, ControlConfig
 from aimai_ocl.coordinator import Coordinator
@@ -22,6 +29,7 @@ from aimai_ocl.runner import run_episode
 from aimai_ocl.statistics import (
     bootstrap_ci_mean,
     collect_executed_violation_stats,
+    collect_toolguard_stats,
     collect_violation_stats,
     sign_flip_pvalues,
     success_from_status,
@@ -172,12 +180,14 @@ def _run_batch(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> in
             trace, info = _run_one_episode(rc, arm)
             elapsed = time.time() - t0
             vs = collect_violation_stats(trace)
+            toolguard_stats = collect_toolguard_stats(trace)
             records.append({
                 "arm": arm.name, "episode_index": i, "seed": seed,
                 "success": success_from_status(info.get("status")),
                 "round": info.get("round"), "seller_reward": info.get("seller_reward"),
                 "latency_sec": round(elapsed, 2), "audit_events": len(trace.events),
                 **vs,
+                **toolguard_stats,
             })
             print(f"  [{arm.name}] episode {i}: status={info.get('status')}, {elapsed:.1f}s")
 
@@ -252,6 +262,7 @@ def _run_benchmark(run_config: RunConfig, exp: dict, args: argparse.Namespace) -
             elapsed = time.time() - t0
             success = success_from_status(info.get("status"))
             vs = collect_violation_stats(trace)
+            toolguard_stats = collect_toolguard_stats(trace)
             executed_vs = collect_executed_violation_stats(
                 trace,
                 buyer_max_price=rc.buyer_max_price,
@@ -264,7 +275,9 @@ def _run_benchmark(run_config: RunConfig, exp: dict, args: argparse.Namespace) -
                 "latency_sec": round(elapsed, 2), "audit_events": len(trace.events),
                 "valid_success": int(success and not executed_vs["has_executed_violation"]),
                 "unsafe_success": int(success and executed_vs["has_executed_violation"]),
-                **vs, **executed_vs,
+                **vs,
+                **executed_vs,
+                **toolguard_stats,
             })
             print(f"  [{arm.name}] status={info.get('status')}, reward={info.get('seller_reward')}, {elapsed:.1f}s")
             
@@ -334,11 +347,14 @@ def _run_paired(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> i
             trace, info = _run_one_episode(rc, arm)
             elapsed = time.time() - t0
             vs = collect_violation_stats(trace)
+            toolguard_stats = collect_toolguard_stats(trace)
             records.append({
                 "arm": arm.name, "episode_index": i, "seed": seed,
                 "success": success_from_status(info.get("status")),
                 "round": info.get("round"), "seller_reward": info.get("seller_reward"),
-                "latency_sec": round(elapsed, 2), **vs,
+                "latency_sec": round(elapsed, 2),
+                **vs,
+                **toolguard_stats,
             })
 
     summaries = summarize_records(records)
@@ -458,7 +474,31 @@ def _run_one_episode(
         risk_rewrite_threshold=arm.risk_rewrite_threshold,
         risk_block_threshold=arm.risk_block_threshold,
     ) if needs_control_config else None
+    toolguard_adapter = None
 
+    if arm.baseline_mode == "toolguard_commerce":
+        guard_dir = run_config.toolguard_generated_guard_dir
+        visibility = run_config.toolguard_buyer_max_price_visibility
+
+        if not guard_dir:
+            raise RuntimeError(
+                "toolguard_commerce requires "
+                "toolguard_generated_guard_dir."
+            )
+
+        if visibility != "platform_visible":
+            raise RuntimeError(
+                "toolguard_buyer_max_price_visibility must be "
+                "'platform_visible'."
+            )
+
+        toolguard_adapter = create_adapter(
+            guard_dir=guard_dir,
+            retry_budget=run_config.toolguard_retry_budget,
+            buyer_max_price_visibility=visibility,
+            arm=arm.name,
+            episode_key=f"{arm.name}-seed-{run_config.seed}",
+        )
     return run_episode(
         env_id=run_config.env_id,
         buyer_agent=buyer,
@@ -481,6 +521,11 @@ def _run_one_episode(
         audit_policy=audit,
         enable_replan=arm.enable_replan,
         baseline_mode=arm.baseline_mode,
+        seller_context_mode=arm.seller_context_mode,
+        toolguard_adapter=toolguard_adapter,
+        toolguard_buyer_max_price_visibility=(
+            run_config.toolguard_buyer_max_price_visibility
+        ),
     )
 
 

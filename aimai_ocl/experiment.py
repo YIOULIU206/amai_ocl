@@ -37,6 +37,11 @@ class RunConfig:
     product_price: float = 180.0
     user_profile: str = "Budget-conscious and compares options before buying."
 
+    # ToolGuard-Commerce runtime configuration.
+    toolguard_generated_guard_dir: str | None = None
+    toolguard_buyer_max_price_visibility: str | None = None
+    toolguard_retry_budget: int = 1
+
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
@@ -53,6 +58,9 @@ class ArmConfig:
     risk_block_threshold: float = 0.75
     enable_replan: bool = True
     audit: str = "full"  # "full", "minimal", "off"
+
+    # Controls the seller LLM generation context.
+    seller_context_mode: str = "enriched"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -82,6 +90,17 @@ ARMS: dict[str, ArmConfig] = {
     "ocl_no_replan": ArmConfig(name="ocl_no_replan", ocl=True, enable_replan=False),
     "ocl_seller_only": ArmConfig(name="ocl_seller_only", ocl=True, coordinator_mode="seller_only"),
     "ocl_state_machine": ArmConfig(name="ocl_state_machine", ocl=True, coordinator_mode="state_machine"),
+    "ocl_matched_context": ArmConfig(
+        name="ocl_matched_context",
+        ocl=True,
+        seller_context_mode="observation_only",
+    ),
+    "toolguard_commerce": ArmConfig(
+        name="toolguard_commerce",
+        ocl=False,
+        baseline_mode="toolguard_commerce",
+        seller_context_mode="observation_only",
+    ),
 }
 
 

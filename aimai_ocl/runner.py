@@ -12,6 +12,9 @@ from aimai_ocl.adapters import (
     passthrough_executable,
     raw_action_from_text,
 )
+from aimai_ocl.baselines.toolguard_commerce.policy_state import (
+    PlatformPolicyState,
+)
 from aimai_ocl.control import (
     AuditPolicy,
     ControlConfig,
@@ -51,6 +54,9 @@ def run_episode(
     audit_policy: AuditPolicy | None = None,
     enable_replan: bool = True,
     baseline_mode: str | None = None,
+    seller_context_mode: str = "enriched",
+    toolguard_adapter: Any | None = None,
+    toolguard_buyer_max_price_visibility: str | None = None,
 ) -> tuple[EpisodeTrace, dict[str, Any]]:
     """Run one negotiation episode.
 
@@ -80,12 +86,23 @@ def run_episode(
         ctrl_state["product_name"] = product_info.get("name")
         ctrl_state["product_price"] = product_info.get("price")
 
+    if baseline_mode == "toolguard_commerce":
+        if toolguard_adapter is None:
+            raise ValueError(
+                "toolguard_commerce requires a configured ToolGuard adapter."
+            )
+        if toolguard_buyer_max_price_visibility is None:
+            raise ValueError(
+                "toolguard_commerce requires "
+                "toolguard_buyer_max_price_visibility."
+            )
+
     done = False
     final_info: dict[str, Any] = {}
 
     while not done:
         round_id = int(observation.get("current_round", 0))
-
+        toolguard_proposal_id: str | None = None
         # --- Buyer turn (always passthrough) ---
         buyer_action = buyer_agent.respond(
             conversation_history=observation["conversation_history"],
@@ -114,8 +131,15 @@ def run_episode(
                 "decision_role": plan.decision_role.value,
                 "reason": plan.reason,
             }
+
+            seller_generation_state = (
+                observation
+                if seller_context_mode == "observation_only"
+                else seller_state
+            )
             seller_action = seller_agent.respond(
-                conversation_history=seller_history, current_state=seller_state,
+                conversation_history=seller_history,
+                current_state=seller_generation_state,
             )
             seller_text = _apply_ocl(
                 trace=trace, text=seller_action,
@@ -124,46 +148,129 @@ def run_episode(
                 audit_policy=policy, enable_replan=enable_replan,
             )
         else:
+            toolguard_policy_state: PlatformPolicyState | None = None
+            seller_generation_state = observation
+
+            if baseline_mode == "toolguard_commerce":
+                guard_state = {
+                    **observation,
+                    **{
+                        key: value
+                        for key, value in ctrl_state.items()
+                        if value is not None
+                    },
+                }
+                toolguard_policy_state = PlatformPolicyState.from_state(
+                    guard_state,
+                    round_id=round_id,
+                    buyer_max_price_visibility=(
+                        toolguard_buyer_max_price_visibility
+                    ),
+                )
+                seller_generation_state = (
+                    toolguard_policy_state.seller_visible_state(observation)
+                )
+
             seller_action = seller_agent.respond(
-                conversation_history=seller_history, current_state=observation,
+                conversation_history=seller_history,
+                current_state=seller_generation_state,
             )
+
             if baseline_mode == "price_floor_guard":
                 seller_text = _apply_price_floor_guard(
-                    trace=trace, text=seller_action,
-                    actor_id=seller_actor_id, round_id=round_id,
-                    state={**observation, **{k: v for k, v in ctrl_state.items() if v is not None}},
+                    trace=trace,
+                    text=seller_action,
+                    actor_id=seller_actor_id,
+                    round_id=round_id,
+                    state={
+                        **observation,
+                        **{
+                            key: value
+                            for key, value in ctrl_state.items()
+                            if value is not None
+                        },
+                    },
                     audit_policy=policy,
                 )
             elif baseline_mode == "reference_monitor":
                 seller_text = _apply_reference_monitor(
-                    trace=trace, text=seller_action,
-                    actor_id=seller_actor_id, round_id=round_id,
-                    state={**observation, **{k: v for k, v in ctrl_state.items() if v is not None}},
+                    trace=trace,
+                    text=seller_action,
+                    actor_id=seller_actor_id,
+                    round_id=round_id,
+                    state={
+                        **observation,
+                        **{
+                            key: value
+                            for key, value in ctrl_state.items()
+                            if value is not None
+                        },
+                    },
                     config=ctrl_cfg,
                     audit_policy=policy,
+                )
+            elif baseline_mode == "toolguard_commerce":
+                if toolguard_policy_state is None:
+                    raise RuntimeError(
+                        "ToolGuard policy state was not initialized."
+                    )
+
+                outcome = toolguard_adapter.process_seller_turn(
+                    text=seller_action,
+                    seller_history=seller_history,
+                    observation=observation,
+                    policy_state=toolguard_policy_state,
+                    actor_id=seller_actor_id,
+                    round_id=round_id,
+                    seller_respond=seller_agent.respond,
+                )
+
+                for event in outcome.events:
+                    _add_event(trace, event, policy)
+
+                seller_text = outcome.text
+                toolguard_proposal_id = outcome.proposal_id
+                trace.metadata["toolguard_commerce"] = (
+                    toolguard_adapter.export()
                 )
             else:
                 # Baseline: passthrough with minimal audit
                 seller_text = _apply_passthrough(
-                    trace=trace, text=seller_action,
-                    actor_id=seller_actor_id, round_id=round_id,
+                    trace=trace,
+                    text=seller_action,
+                    actor_id=seller_actor_id,
+                    round_id=round_id,
                     audit_policy=policy,
                 )
 
         if seller_text is not None:
+            executed_record: dict[str, Any] = {
+                "round_id": round_id,
+                "actor_id": seller_actor_id,
+                "text": seller_text,
+            }
+
+            if toolguard_proposal_id is not None:
+                executed_record["proposal_id"] = toolguard_proposal_id
+
             trace.metadata.setdefault("executed_seller_actions", []).append(
-                {
-                    "round_id": round_id,
-                    "actor_id": seller_actor_id,
-                    "text": seller_text,
-                }
+                executed_record
             )
 
         observation, _, terminated, truncated, final_info = adapter.step(
-            buyer_action=buyer_text, seller_action=seller_text,
+            buyer_action=buyer_text,
+            seller_action=seller_text,
         )
-        done = terminated or truncated
 
+        if baseline_mode == "toolguard_commerce":
+            toolguard_adapter.mark_reached_env(toolguard_proposal_id)
+            trace.metadata["toolguard_commerce"] = (
+                toolguard_adapter.export()
+            )
+
+        done = terminated or truncated
+    if baseline_mode == "toolguard_commerce":
+        trace.metadata["toolguard_commerce"] = toolguard_adapter.export()
     trace.final_status = str(final_info.get("status"))
     trace.final_metrics = {k: final_info.get(k) for k in _METRIC_KEYS}
     _add_event(trace, AuditEvent(

@@ -1,0 +1,17 @@
+inherit: default.yaml
+mode: benchmark
+dataset: configs/adversarial_buyers.json
+
+arms:
+  - single
+  - prompt_policy
+  - price_floor_guard
+  - reference_monitor
+  - toolguard_commerce
+  - ocl_matched_context
+  - ocl_no_replan
+  - ocl_full
+
+toolguard_generated_guard_dir: artifacts/toolguard_commerce/step2
+toolguard_buyer_max_price_visibility: platform_visible
+toolguard_retry_budget: 1
