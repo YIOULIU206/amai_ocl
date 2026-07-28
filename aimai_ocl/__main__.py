@@ -20,6 +20,9 @@ from aimai_ocl.attribution import (
     compute_shapley,
     run_masked_episode
 )
+from aimai_ocl.baselines.agentspec_commerce import (
+    AgentSpecCommerceAdapter,
+)
 from aimai_ocl.baselines.toolguard_commerce.adapter import create_adapter
 from aimai_ocl.config import load_config, load_experiment_yaml
 from aimai_ocl.control import AUDIT_FULL, AUDIT_MINIMAL, AUDIT_OFF, AuditPolicy, ControlConfig
@@ -474,7 +477,11 @@ def _run_one_episode(
         risk_rewrite_threshold=arm.risk_rewrite_threshold,
         risk_block_threshold=arm.risk_block_threshold,
     ) if needs_control_config else None
+    agentspec_adapter = None
     toolguard_adapter = None
+
+    if arm.baseline_mode == "agentspec_commerce":
+        agentspec_adapter = AgentSpecCommerceAdapter()
 
     if arm.baseline_mode == "toolguard_commerce":
         guard_dir = run_config.toolguard_generated_guard_dir
@@ -522,6 +529,7 @@ def _run_one_episode(
         enable_replan=arm.enable_replan,
         baseline_mode=arm.baseline_mode,
         seller_context_mode=arm.seller_context_mode,
+        agentspec_adapter=agentspec_adapter,
         toolguard_adapter=toolguard_adapter,
         toolguard_buyer_max_price_visibility=(
             run_config.toolguard_buyer_max_price_visibility
