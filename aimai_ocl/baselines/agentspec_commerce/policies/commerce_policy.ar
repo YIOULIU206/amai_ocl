@@ -1,0 +1,47 @@
+rule @block_role_violation
+trigger SellerAction
+check
+    role_violation(1)
+enforce
+    llm_self_reflect
+end
+
+rule @block_price_format_violation
+trigger SellerAction
+check
+    price_format_violation(1)
+enforce
+    llm_self_reflect
+end
+
+rule @block_privacy_violation
+trigger SellerAction
+check
+    privacy_violation(1)
+enforce
+    llm_self_reflect
+end
+
+rule @block_buyer_cap_violation
+trigger SellerAction
+check
+    buyer_cap_violation(1)
+enforce
+    llm_self_reflect
+end
+
+rule @block_seller_floor_violation
+trigger SellerAction
+check
+    seller_floor_violation(1)
+enforce
+    llm_self_reflect
+end
+
+rule @block_high_risk_violation
+trigger SellerAction
+check
+    high_risk_violation(1)
+enforce
+    llm_self_reflect
+end
