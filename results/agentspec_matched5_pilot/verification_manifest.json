@@ -1,0 +1,133 @@
+{
+  "generated_at_utc": "2026-07-28T07:04:43.302045+00:00",
+  "comparison_type": "matched descriptive five-profile pilot",
+  "profiles": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "seeds": [
+    42,
+    43,
+    44,
+    45,
+    46
+  ],
+  "model_setting": "qwen-plus / DashScope",
+  "sources": {
+    "EGI": {
+      "path": "artifacts/ocl_matched_pilot_output/benchmark_results.json",
+      "sha256": "49073a4dab0d5f802fc2abe7bd8b4b0b30129eec103d072ce0a620a96d837eb6",
+      "record_count": 5,
+      "arm": "ocl_matched_context",
+      "profiles": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "seeds": [
+        42,
+        43,
+        44,
+        45,
+        46
+      ]
+    },
+    "ToolGuard-Commerce": {
+      "path": "artifacts/toolguard_pilot_output/benchmark_results.json",
+      "sha256": "028497af3625a6c746fd259c33b877e7eb69c670710cfd2a2de045b6a58fd650",
+      "record_count": 5,
+      "arm": "toolguard_commerce",
+      "profiles": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "seeds": [
+        42,
+        43,
+        44,
+        45,
+        46
+      ]
+    },
+    "AgentSpec-Commerce": {
+      "path": "artifacts/agentspec_qwen_profiles_0_4/benchmark_results.json",
+      "sha256": "58c4b68e4ba92947c030bfa5bf6f3f04848ce944ab59ec4e14f23ed79e1f593c",
+      "record_count": 5,
+      "arm": "agentspec_commerce",
+      "profiles": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "seeds": [
+        42,
+        43,
+        44,
+        45,
+        46
+      ]
+    }
+  },
+  "summaries": [
+    {
+      "method": "EGI",
+      "success_count": 5,
+      "success_rate": 1.0,
+      "valid_success_count": 5,
+      "valid_success_rate": 1.0,
+      "executed_violation_count": 0,
+      "executed_violation_rate": 0.0,
+      "avg_round": 4.4,
+      "avg_latency_sec": 109.806,
+      "avg_seller_reward": 2.56
+    },
+    {
+      "method": "ToolGuard-Commerce",
+      "success_count": 3,
+      "success_rate": 0.6,
+      "valid_success_count": 3,
+      "valid_success_rate": 0.6,
+      "executed_violation_count": 0,
+      "executed_violation_rate": 0.0,
+      "avg_round": 7.4,
+      "avg_latency_sec": 496.916,
+      "avg_seller_reward": 17.259999999999998
+    },
+    {
+      "method": "AgentSpec-Commerce",
+      "success_count": 4,
+      "success_rate": 0.8,
+      "valid_success_count": 4,
+      "valid_success_rate": 0.8,
+      "executed_violation_count": 0,
+      "executed_violation_rate": 0.0,
+      "avg_round": 6.0,
+      "avg_latency_sec": 172.82,
+      "avg_seller_reward": 5.4
+    }
+  ],
+  "checks": {
+    "matched_profiles_and_seeds": true,
+    "egi_zero_executed_violations": true,
+    "toolguard_zero_executed_violations": true,
+    "agentspec_zero_executed_violations": true,
+    "egi_valid_success_above_toolguard": true,
+    "egi_valid_success_above_agentspec": true,
+    "egi_fewer_rounds_than_toolguard": true,
+    "egi_fewer_rounds_than_agentspec": true,
+    "egi_lower_latency_than_toolguard": true,
+    "egi_lower_latency_than_agentspec": true
+  },
+  "all_checks_pass": true,
+  "claim_scope": "Preliminary matched-pilot evidence. Not a statistical-significance claim."
+}

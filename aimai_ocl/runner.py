@@ -12,6 +12,9 @@ from aimai_ocl.adapters import (
     passthrough_executable,
     raw_action_from_text,
 )
+from aimai_ocl.baselines.agentspec_commerce.adapter import (
+    seller_visible_state as agentspec_seller_visible_state,
+)
 from aimai_ocl.baselines.toolguard_commerce.policy_state import (
     PlatformPolicyState,
 )
@@ -55,6 +58,7 @@ def run_episode(
     enable_replan: bool = True,
     baseline_mode: str | None = None,
     seller_context_mode: str = "enriched",
+    agentspec_adapter: Any | None = None,
     toolguard_adapter: Any | None = None,
     toolguard_buyer_max_price_visibility: str | None = None,
 ) -> tuple[EpisodeTrace, dict[str, Any]]:
@@ -86,6 +90,13 @@ def run_episode(
         ctrl_state["product_name"] = product_info.get("name")
         ctrl_state["product_price"] = product_info.get("price")
 
+    if baseline_mode == "agentspec_commerce":
+        if agentspec_adapter is None:
+            raise ValueError(
+                "agentspec_commerce requires a configured "
+                "AgentSpecCommerceAdapter."
+            )
+
     if baseline_mode == "toolguard_commerce":
         if toolguard_adapter is None:
             raise ValueError(
@@ -102,6 +113,7 @@ def run_episode(
 
     while not done:
         round_id = int(observation.get("current_round", 0))
+        agentspec_round_record: dict[str, Any] | None = None
         toolguard_proposal_id: str | None = None
         # --- Buyer turn (always passthrough) ---
         buyer_action = buyer_agent.respond(
@@ -151,7 +163,11 @@ def run_episode(
             toolguard_policy_state: PlatformPolicyState | None = None
             seller_generation_state = observation
 
-            if baseline_mode == "toolguard_commerce":
+            if baseline_mode == "agentspec_commerce":
+                seller_generation_state = agentspec_seller_visible_state(
+                    observation
+                )
+            elif baseline_mode == "toolguard_commerce":
                 guard_state = {
                     **observation,
                     **{
@@ -209,6 +225,36 @@ def run_episode(
                     config=ctrl_cfg,
                     audit_policy=policy,
                 )
+            elif baseline_mode == "agentspec_commerce":
+                outcome = agentspec_adapter.process_seller_turn(
+                    text=seller_action,
+                    seller_history=seller_history,
+                    observation=observation,
+                    buyer_max_price=ctrl_state.get("buyer_max_price"),
+                    seller_min_price=ctrl_state.get("seller_min_price"),
+                    actor_id=seller_actor_id,
+                    round_id=round_id,
+                    seller_respond=seller_agent.respond,
+                )
+
+                seller_text = outcome.text
+                agentspec_round_record = _agentspec_outcome_record(
+                    outcome=outcome,
+                    round_id=round_id,
+                    actor_id=seller_actor_id,
+                )
+
+                agentspec_payload = trace.metadata.setdefault(
+                    "agentspec_commerce",
+                    {
+                        "baseline": "agentspec_commerce",
+                        "rounds": [],
+                    },
+                )
+                agentspec_payload["rounds"].append(
+                    agentspec_round_record
+                )
+
             elif baseline_mode == "toolguard_commerce":
                 if toolguard_policy_state is None:
                     raise RuntimeError(
@@ -250,6 +296,11 @@ def run_episode(
                 "text": seller_text,
             }
 
+            if agentspec_round_record is not None:
+                executed_record["agentspec_selected_attempt"] = (
+                    agentspec_round_record["selected_attempt"]
+                )
+
             if toolguard_proposal_id is not None:
                 executed_record["proposal_id"] = toolguard_proposal_id
 
@@ -261,6 +312,11 @@ def run_episode(
             buyer_action=buyer_text,
             seller_action=seller_text,
         )
+
+        if agentspec_round_record is not None:
+            agentspec_round_record["reached_env"] = int(
+                seller_text is not None
+            )
 
         if baseline_mode == "toolguard_commerce":
             toolguard_adapter.mark_reached_env(toolguard_proposal_id)
@@ -288,6 +344,46 @@ def run_episode(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _agentspec_outcome_record(
+    *,
+    outcome: Any,
+    round_id: int,
+    actor_id: str,
+) -> dict[str, Any]:
+    """Serialise one AgentSpec seller turn without blocked raw text."""
+    attempts: list[dict[str, Any]] = []
+
+    for attempt in outcome.attempts:
+        verdict = attempt.verdict
+        attempts.append(
+            {
+                "attempt": int(attempt.attempt),
+                "runtime_sec": round(float(attempt.runtime_sec), 6),
+                "allowed": bool(verdict.allowed),
+                "decision": verdict.decision.value,
+                "matched_rule_id": verdict.matched_rule_id,
+                "violation_type": (
+                    verdict.violation_type.value
+                    if verdict.violation_type is not None
+                    else None
+                ),
+            }
+        )
+
+    return {
+        "round_id": int(round_id),
+        "actor_id": str(actor_id),
+        "decisions": list(outcome.decisions),
+        "self_reflection_calls": int(
+            outcome.self_reflection_calls
+        ),
+        "selected_attempt": outcome.selected_attempt,
+        "no_op": bool(outcome.no_op),
+        "reached_env": 0,
+        "attempts": attempts,
+    }
 
 
 def _apply_ocl(

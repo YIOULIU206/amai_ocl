@@ -20,6 +20,9 @@ from aimai_ocl.attribution import (
     compute_shapley,
     run_masked_episode
 )
+from aimai_ocl.baselines.agentspec_commerce import (
+    AgentSpecCommerceAdapter,
+)
 from aimai_ocl.baselines.toolguard_commerce.adapter import create_adapter
 from aimai_ocl.config import load_config, load_experiment_yaml
 from aimai_ocl.control import AUDIT_FULL, AUDIT_MINIMAL, AUDIT_OFF, AuditPolicy, ControlConfig
@@ -28,6 +31,7 @@ from aimai_ocl.experiment import ARMS, ArmConfig, ExperimentConfig, RunConfig, r
 from aimai_ocl.runner import run_episode
 from aimai_ocl.statistics import (
     bootstrap_ci_mean,
+    collect_agentspec_stats,
     collect_executed_violation_stats,
     collect_toolguard_stats,
     collect_violation_stats,
@@ -180,6 +184,7 @@ def _run_batch(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> in
             trace, info = _run_one_episode(rc, arm)
             elapsed = time.time() - t0
             vs = collect_violation_stats(trace)
+            agentspec_stats = collect_agentspec_stats(trace)
             toolguard_stats = collect_toolguard_stats(trace)
             records.append({
                 "arm": arm.name, "episode_index": i, "seed": seed,
@@ -187,6 +192,7 @@ def _run_batch(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> in
                 "round": info.get("round"), "seller_reward": info.get("seller_reward"),
                 "latency_sec": round(elapsed, 2), "audit_events": len(trace.events),
                 **vs,
+                **agentspec_stats,
                 **toolguard_stats,
             })
             print(f"  [{arm.name}] episode {i}: status={info.get('status')}, {elapsed:.1f}s")
@@ -262,6 +268,7 @@ def _run_benchmark(run_config: RunConfig, exp: dict, args: argparse.Namespace) -
             elapsed = time.time() - t0
             success = success_from_status(info.get("status"))
             vs = collect_violation_stats(trace)
+            agentspec_stats = collect_agentspec_stats(trace)
             toolguard_stats = collect_toolguard_stats(trace)
             executed_vs = collect_executed_violation_stats(
                 trace,
@@ -277,6 +284,7 @@ def _run_benchmark(run_config: RunConfig, exp: dict, args: argparse.Namespace) -
                 "unsafe_success": int(success and executed_vs["has_executed_violation"]),
                 **vs,
                 **executed_vs,
+                **agentspec_stats,
                 **toolguard_stats,
             })
             print(f"  [{arm.name}] status={info.get('status')}, reward={info.get('seller_reward')}, {elapsed:.1f}s")
@@ -347,6 +355,7 @@ def _run_paired(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> i
             trace, info = _run_one_episode(rc, arm)
             elapsed = time.time() - t0
             vs = collect_violation_stats(trace)
+            agentspec_stats = collect_agentspec_stats(trace)
             toolguard_stats = collect_toolguard_stats(trace)
             records.append({
                 "arm": arm.name, "episode_index": i, "seed": seed,
@@ -354,6 +363,7 @@ def _run_paired(run_config: RunConfig, exp: dict, args: argparse.Namespace) -> i
                 "round": info.get("round"), "seller_reward": info.get("seller_reward"),
                 "latency_sec": round(elapsed, 2),
                 **vs,
+                **agentspec_stats,
                 **toolguard_stats,
             })
 
@@ -474,7 +484,11 @@ def _run_one_episode(
         risk_rewrite_threshold=arm.risk_rewrite_threshold,
         risk_block_threshold=arm.risk_block_threshold,
     ) if needs_control_config else None
+    agentspec_adapter = None
     toolguard_adapter = None
+
+    if arm.baseline_mode == "agentspec_commerce":
+        agentspec_adapter = AgentSpecCommerceAdapter()
 
     if arm.baseline_mode == "toolguard_commerce":
         guard_dir = run_config.toolguard_generated_guard_dir
@@ -522,6 +536,7 @@ def _run_one_episode(
         enable_replan=arm.enable_replan,
         baseline_mode=arm.baseline_mode,
         seller_context_mode=arm.seller_context_mode,
+        agentspec_adapter=agentspec_adapter,
         toolguard_adapter=toolguard_adapter,
         toolguard_buyer_max_price_visibility=(
             run_config.toolguard_buyer_max_price_visibility

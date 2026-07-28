@@ -1,0 +1,8 @@
+mode: benchmark
+dataset: configs/adversarial_buyers.json
+provider: dashscope
+model: qwen-plus
+api_key_env: DASHSCOPE_API_KEY
+
+arms:
+  - agentspec_commerce
