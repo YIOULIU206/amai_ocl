@@ -3,11 +3,8 @@
 The predicates implement the policy conditions referenced by
 ``policies/commerce_policy.ar``.
 
-This module deliberately does not import:
-
-* aimai_ocl.control,
-* ToolGuard-Commerce,
-* any EGI recovery or escalation component.
+This module is independent of the project's OCL controller,
+ToolGuard-Commerce, and all EGI recovery or escalation components.
 
 It only consumes the shared RawAction schema and platform-side policy values.
 """

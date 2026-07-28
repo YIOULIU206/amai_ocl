@@ -345,6 +345,125 @@ def collect_executed_violation_stats(
         "has_executed_violation": failed_constraint_count > 0,
         "executed_violation_type_counts": violation_type_counts,
     }
+def collect_agentspec_stats(
+    trace: EpisodeTrace,
+) -> dict[str, Any]:
+    """Collect AgentSpec-Commerce metrics from one completed trace.
+
+    AgentSpec metrics remain separate from OCL and ToolGuard metrics.
+    One proposal corresponds to one seller turn processed by the
+    AgentSpec runtime.
+    """
+    metadata = trace.metadata if isinstance(trace.metadata, dict) else {}
+    payload = metadata.get("agentspec_commerce")
+
+    if not isinstance(payload, dict):
+        rounds: list[Any] = []
+    else:
+        raw_rounds = payload.get("rounds")
+        rounds = raw_rounds if isinstance(raw_rounds, list) else []
+
+    proposal_count = 0
+    detected_count = 0
+    intercepted_count = 0
+    self_reflection_calls = 0
+    revision_passed_count = 0
+    retry_exhausted_count = 0
+    candidate_selected_count = 0
+    no_op_count = 0
+    reached_env_count = 0
+    policy_runtime_sec = 0.0
+
+    for raw_round in rounds:
+        if not isinstance(raw_round, dict):
+            continue
+
+        proposal_count += 1
+
+        raw_attempts = raw_round.get("attempts")
+        attempts = (
+            raw_attempts
+            if isinstance(raw_attempts, list)
+            else []
+        )
+
+        for raw_attempt in attempts:
+            if not isinstance(raw_attempt, dict):
+                continue
+            policy_runtime_sec += (
+                _as_float(raw_attempt.get("runtime_sec")) or 0.0
+            )
+
+        first_detected = False
+        if attempts and isinstance(attempts[0], dict):
+            first_detected = not bool(
+                attempts[0].get("allowed", False)
+            )
+        else:
+            decisions = raw_round.get("decisions")
+            if isinstance(decisions, list) and decisions:
+                first_detected = (
+                    str(decisions[0]) == "llm_self_reflect"
+                )
+
+        if first_detected:
+            detected_count += 1
+            intercepted_count += 1
+
+        reflection_count = _as_int(
+            raw_round.get("self_reflection_calls")
+        )
+        self_reflection_calls += reflection_count
+
+        selected_attempt = raw_round.get("selected_attempt")
+        reached_env = _as_int(raw_round.get("reached_env"))
+
+        if selected_attempt is not None:
+            candidate_selected_count += 1
+
+        if (
+            selected_attempt is not None
+            and _as_int(selected_attempt) > 0
+            and reached_env > 0
+        ):
+            revision_passed_count += 1
+
+        if reflection_count > 0 and selected_attempt is None:
+            retry_exhausted_count += 1
+
+        if bool(raw_round.get("no_op", False)):
+            no_op_count += 1
+
+        if reached_env > 0:
+            reached_env_count += 1
+
+    intercept_rate = (
+        intercepted_count / proposal_count
+        if proposal_count > 0
+        else 0.0
+    )
+    revision_pass_rate = (
+        revision_passed_count / self_reflection_calls
+        if self_reflection_calls > 0
+        else 0.0
+    )
+
+    return {
+        "agentspec_proposal_count": proposal_count,
+        "agentspec_detected_count": detected_count,
+        "agentspec_intercepted_count": intercepted_count,
+        "agentspec_self_reflection_calls": self_reflection_calls,
+        "agentspec_revision_passed_count": revision_passed_count,
+        "agentspec_retry_exhausted_count": retry_exhausted_count,
+        "agentspec_candidate_selected_count": candidate_selected_count,
+        "agentspec_no_op_count": no_op_count,
+        "agentspec_reached_env_count": reached_env_count,
+        "agentspec_policy_runtime_sec": policy_runtime_sec,
+        "agentspec_intercept_rate": intercept_rate,
+        "agentspec_revision_pass_rate": revision_pass_rate,
+    }
+
+
 def collect_toolguard_stats(trace: EpisodeTrace) -> dict[str, Any]:
     """Collect ToolGuard-Commerce metrics from one completed trace.
 
@@ -452,6 +571,70 @@ def summarize_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             sum(_as_int(row.get("executed_failed_constraint_count")) for row in rows)
         )
         total_escalations = int(sum(_as_int(row.get("escalation_count")) for row in rows))
+
+        total_agentspec_proposals = int(
+            sum(
+                _as_int(row.get("agentspec_proposal_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_detected = int(
+            sum(
+                _as_int(row.get("agentspec_detected_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_intercepted = int(
+            sum(
+                _as_int(row.get("agentspec_intercepted_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_self_reflections = int(
+            sum(
+                _as_int(row.get("agentspec_self_reflection_calls"))
+                for row in rows
+            )
+        )
+        total_agentspec_revision_passed = int(
+            sum(
+                _as_int(row.get("agentspec_revision_passed_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_retry_exhausted = int(
+            sum(
+                _as_int(row.get("agentspec_retry_exhausted_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_candidate_selected = int(
+            sum(
+                _as_int(row.get("agentspec_candidate_selected_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_no_op = int(
+            sum(
+                _as_int(row.get("agentspec_no_op_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_reached_env = int(
+            sum(
+                _as_int(row.get("agentspec_reached_env_count"))
+                for row in rows
+            )
+        )
+        total_agentspec_policy_runtime_sec = float(
+            sum(
+                _as_float(
+                    row.get("agentspec_policy_runtime_sec")
+                ) or 0.0
+                for row in rows
+            )
+        )
+
         total_toolguard_proposals = int(
             sum(_as_int(row.get("toolguard_proposal_count")) for row in rows)
         )
@@ -496,6 +679,25 @@ def summarize_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 _as_float(row.get("toolguard_guard_runtime_sec")) or 0.0
                 for row in rows
             )
+        )
+
+        agentspec_intercept_rate = (
+            total_agentspec_intercepted
+            / total_agentspec_proposals
+            if total_agentspec_proposals > 0
+            else 0.0
+        )
+        agentspec_revision_pass_rate = (
+            total_agentspec_revision_passed
+            / total_agentspec_self_reflections
+            if total_agentspec_self_reflections > 0
+            else 0.0
+        )
+        avg_agentspec_policy_runtime_sec = (
+            total_agentspec_policy_runtime_sec
+            / total_agentspec_proposals
+            if total_agentspec_proposals > 0
+            else 0.0
         )
 
         toolguard_block_rate = (
@@ -547,6 +749,43 @@ def summarize_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "total_failed_constraints": total_failed_constraints,
                 "total_executed_failed_constraints": total_executed_failed_constraints,
                 "total_escalations": total_escalations,
+                "total_agentspec_proposals": (
+                    total_agentspec_proposals
+                ),
+                "total_agentspec_detected": (
+                    total_agentspec_detected
+                ),
+                "total_agentspec_intercepted": (
+                    total_agentspec_intercepted
+                ),
+                "total_agentspec_self_reflections": (
+                    total_agentspec_self_reflections
+                ),
+                "total_agentspec_revision_passed": (
+                    total_agentspec_revision_passed
+                ),
+                "total_agentspec_retry_exhausted": (
+                    total_agentspec_retry_exhausted
+                ),
+                "total_agentspec_candidate_selected": (
+                    total_agentspec_candidate_selected
+                ),
+                "total_agentspec_no_op": total_agentspec_no_op,
+                "total_agentspec_reached_env": (
+                    total_agentspec_reached_env
+                ),
+                "total_agentspec_policy_runtime_sec": (
+                    total_agentspec_policy_runtime_sec
+                ),
+                "agentspec_intercept_rate": (
+                    agentspec_intercept_rate
+                ),
+                "agentspec_revision_pass_rate": (
+                    agentspec_revision_pass_rate
+                ),
+                "avg_agentspec_policy_runtime_sec": (
+                    avg_agentspec_policy_runtime_sec
+                ),
                 "total_toolguard_proposals": total_toolguard_proposals,
                 "total_toolguard_detected": total_toolguard_detected,
                 "total_toolguard_blocked": total_toolguard_blocked,
