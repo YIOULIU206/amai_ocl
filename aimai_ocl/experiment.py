@@ -101,6 +101,12 @@ ARMS: dict[str, ArmConfig] = {
         baseline_mode="toolguard_commerce",
         seller_context_mode="observation_only",
     ),
+    "agentspec_commerce": ArmConfig(
+        name="agentspec_commerce",
+        ocl=False,
+        baseline_mode="agentspec_commerce",
+        seller_context_mode="observation_only",
+    ),
 }
 
 
