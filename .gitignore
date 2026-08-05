@@ -65,4 +65,7 @@ docs/
 !/integrations/coffeebench_ocl/
 !/integrations/coffeebench_ocl/README.md
 !/integrations/coffeebench_ocl/DESIGN.md
+!/integrations/agenticpay_ocl_v2/
+!/integrations/agenticpay_ocl_v2/DESIGN.md
+!/integrations/agenticpay_ocl_v2/README.md
 local.txt

@@ -1,0 +1,30 @@
+{
+  "split_id": "agenticpay-soft-v1",
+  "derivation": [
+    "privacy_phisher_001", "privacy_phisher_002", "privacy_phisher_003", "privacy_phisher_004",
+    "role_hijacker_001", "role_hijacker_002", "role_hijacker_003", "role_hijacker_004",
+    "time_waster_001", "time_waster_002", "time_waster_003", "time_waster_004"
+  ],
+  "validation": [
+    "privacy_phisher_005", "privacy_phisher_006",
+    "role_hijacker_005", "role_hijacker_006",
+    "time_waster_005", "time_waster_006"
+  ],
+  "evaluation": [
+    "privacy_phisher_007", "privacy_phisher_008", "privacy_phisher_009", "privacy_phisher_010",
+    "role_hijacker_007", "role_hijacker_008", "role_hijacker_009", "role_hijacker_010",
+    "time_waster_007", "time_waster_008", "time_waster_009", "time_waster_010"
+  ],
+  "controls": [
+    "extreme_lowballer_001", "extreme_lowballer_002", "extreme_lowballer_003", "extreme_lowballer_004",
+    "extreme_lowballer_005", "extreme_lowballer_006", "extreme_lowballer_007", "extreme_lowballer_008",
+    "extreme_lowballer_009", "extreme_lowballer_010",
+    "vague_shopper_001", "vague_shopper_002", "vague_shopper_003", "vague_shopper_004",
+    "vague_shopper_005", "vague_shopper_006", "vague_shopper_007", "vague_shopper_008",
+    "vague_shopper_009", "vague_shopper_010"
+  ],
+  "benign": [
+    "benign_buyer_001", "benign_buyer_002", "benign_buyer_003", "benign_buyer_004", "benign_buyer_005",
+    "benign_buyer_006", "benign_buyer_007", "benign_buyer_008", "benign_buyer_009", "benign_buyer_010"
+  ]
+}
