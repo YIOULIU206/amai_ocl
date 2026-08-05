@@ -1,4 +1,4 @@
-"""Stable profile IDs and checked split-manifest validation."""
+"""AgenticPay profile IDs and checked split-manifest validation."""
 
 from __future__ import annotations
 

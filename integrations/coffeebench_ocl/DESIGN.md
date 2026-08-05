@@ -1,15 +1,15 @@
 # CoffeeBench OCL Adapter Design
 
-This document records the current experiment design for integrating AiMai OCL
-with the official CoffeeBench benchmark.
+This document records the CoffeeBench host adapter for the environment-
+independent `aocl_core` and the benchmark-specific experiment surface.
 
 The upstream CoffeeBench code inspected for this design was
 `SakanaAI/CoffeeBench` at commit `71442fb`. CoffeeBench is treated as an
 external benchmark, not vendored into this repository.
 
-This integration lives under `integrations/` to make the ownership boundary
-explicit: CoffeeBench remains the benchmark; this package is the OCL attachment
-and measurement layer.
+This integration lives under `integrations/` to make ownership explicit:
+CoffeeBench remains the benchmark, `aocl_core` owns generic control and
+learning, and this package owns only CoffeeBench attachment and measurement.
 
 ## 1. OCL Boundary
 
@@ -93,6 +93,9 @@ The current runtime supports:
 - hiding raw focal trade tools in the contract-interface arm
 - DashScope/Qwen model ids through an adapter-local provider, without patching
   the installed CoffeeBench package
+- translation of native validation results into shared A-OCL `CheckResult`s
+- optional frozen-library retrieval/evaluation before native tool invocation
+- reporting native tool outcomes back to the core as `ObservedOutcome`
 
 The contract-interface arm hides:
 
@@ -107,6 +110,22 @@ return_shipment
 `post_listing` and `roast` keep their CoffeeBench names because there is not yet
 a separate sale-side or production-planning contract interface. They are still
 wrapped by OCL validation.
+
+The adaptive execution path is:
+
+```text
+BusinessApp tool proposal
+  -> CoffeeBench native hard validation
+  -> CoffeeBenchCoreAdapter
+  -> ProposedAction + ObservableContext + host CheckResults
+  -> shared A-OCL retrieval/evaluation/decision
+  -> execute or return a blocked result
+  -> ObservedOutcome
+```
+
+The adapter exposes focal cash, inventory, day, and action-linked native
+objects available at the tool boundary. It does not expose rewards, future
+events, benchmark answers, or truth-ledger oracle state.
 
 ## 4. Model Providers
 
@@ -191,6 +210,19 @@ B5 OCL-Contract Interface
 This ladder is the paper-facing ablation surface. Numeric phases in the code are
 implementation milestones and compatibility names only.
 
+The adaptive-library comparison is orthogonal to B0-B5. Within a selected
+execution arm, compare a static checkpoint against successive frozen libraries:
+
+```text
+L0  host hard checks only
+L1  first validated frozen experience library
+L2  later validated frozen experience library
+```
+
+Library candidates are derived and validated offline. Every evaluation run
+pins one digest; CoffeeBench evaluation failures never update that run's
+library. This avoids mixing capability-arm effects with test-set feedback.
+
 ## 7. Metrics
 
 CoffeeBench-native metrics:
@@ -214,6 +246,10 @@ OCL control metrics:
 - invalid action rate
 - warning and blocking reasons
 - audit trace completeness
+- frozen library digest and checkpoint
+- retrieved and activated constraint counts
+- interventions by hard check versus learned soft constraint
+- benign false-positive rate on matched control episodes
 
 Settlement metrics:
 
@@ -246,8 +282,12 @@ Recommended ladder:
   tools wrapped by validation.
 - DashScope/Qwen cost accounting needs explicit local per-token rate
   environment variables; otherwise token counts are tracked but cost is `0`.
-- Validation is conservative and rule-based; it is not yet calibrated on many
-  invalid LLM traces.
+- Native validation is conservative and rule-based; learned soft constraints
+  still require derivation/validation corpora before a paper-facing library can
+  be claimed.
+- The CLI frozen-library path currently uses lexical activation. Semantic gate
+  evaluation is available through the shared injected evaluator interface but
+  is not yet wired to the CoffeeBench CLI provider configuration.
 - The default no-cost `heuristic_roaster` may produce few trade events in short
   runs, so validation behavior is covered by unit tests and must be stress
   tested with LLM traces.

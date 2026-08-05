@@ -1,4 +1,4 @@
-"""Audit contracts and built-in sinks."""
+"""Audit contracts and built-in sinks for the shared A-OCL core."""
 
 from __future__ import annotations
 

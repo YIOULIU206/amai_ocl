@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 from .agenticpay_runner import AgenticPayRunResult
-from .json_utils import jsonable
-from .learning import LearningTrace, VisibleTurn
+from aocl_core.json_utils import jsonable
+from aocl_core.learning import LearningTrace, VisibleActionStep
 
 
 def learning_trace_from_run(
@@ -17,23 +17,36 @@ def learning_trace_from_run(
     split: str,
     action_type: str = "commerce.respond",
 ) -> LearningTrace:
-    turns: list[VisibleTurn] = []
+    steps: list[VisibleActionStep] = []
     for turn in result.turns:
-        latest_proposal = turn.proposals[-1].proposed_text if turn.proposals else None
-        turns.append(
-            VisibleTurn(
-                round_id=turn.round_id,
-                buyer_visible_text=turn.buyer_visible_text,
-                seller_proposed_text=latest_proposal,
-                seller_executed_text=turn.seller_executed_text,
+        for proposal in turn.proposals:
+            steps.append(
+                VisibleActionStep(
+                    step_id=len(steps),
+                    action_type=action_type,
+                    observable_context={
+                        "round_id": turn.round_id,
+                        "buyer_visible_text": turn.buyer_visible_text,
+                    },
+                    proposed_action={
+                        "action_id": proposal.action_id,
+                        "visible_text": proposal.proposed_text,
+                    },
+                    executed=proposal.executed,
+                    visible_result={
+                        "decision": proposal.decision,
+                        "message": proposal.message,
+                        "executed_text": (
+                            turn.seller_executed_text if proposal.executed else None
+                        ),
+                    },
+                )
             )
-        )
     return LearningTrace(
         episode_id=result.episode_id,
-        profile_id=profile_id,
+        scenario_id=profile_id,
         split=split,
-        action_type=action_type,
-        turns=tuple(turns),
+        steps=tuple(steps),
         visible_outcome=dict(result.final_info),
     )
 

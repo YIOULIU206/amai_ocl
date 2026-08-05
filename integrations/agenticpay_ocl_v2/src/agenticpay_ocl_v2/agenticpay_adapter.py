@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, Mapping, Sequence
 
-from .contracts import (
+from aocl_core.contracts import (
     CheckLevel,
     CheckResult,
     ControlDecision,
@@ -15,7 +15,7 @@ from .contracts import (
     ObservedOutcome,
     ProposedAction,
 )
-from .runtime import IntegrationOCLRuntime
+from aocl_core.runtime import IntegrationOCLRuntime
 
 
 _FORBIDDEN_CONTEXT_KEYS = {

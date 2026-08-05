@@ -28,6 +28,17 @@ The current public codebase includes:
   [`benchmarks/conversational_consumer_selection_v2`](benchmarks/conversational_consumer_selection_v2)
 - tests in [`tests`](tests)
 
+An independent adaptive-integration track lives under [`integrations`](integrations):
+
+- [`aocl_core`](integrations/aocl_core) provides the benchmark-independent
+  action gate, frozen constraint library, and offline validation/promotion loop
+- [`agenticpay_ocl_v2`](integrations/agenticpay_ocl_v2) is the minimal
+  short-horizon negotiation adapter and real-LLM demo
+- [`coffeebench_ocl`](integrations/coffeebench_ocl) controls long-horizon focal
+  business tool calls while preserving CoffeeBench's native economy
+- [`shoppingbench_ocl`](integrations/shoppingbench_ocl) records a design-only
+  future recommendation boundary and intentionally contains no partial runtime
+
 ## Main Components
 
 - `Role decomposition`
@@ -120,6 +131,11 @@ benchmarks/conversational_consumer_selection_v2/
   src/conversational_consumer_selection/
   tests/
 tests/
+integrations/
+  aocl_core/              shared adaptive runtime and offline loop
+  agenticpay_ocl_v2/      AgenticPay host mapping and demo
+  coffeebench_ocl/        CoffeeBench tool/lifecycle host mapping
+  shoppingbench_ocl/      design-only future adapter
 ```
 
 ## Installation

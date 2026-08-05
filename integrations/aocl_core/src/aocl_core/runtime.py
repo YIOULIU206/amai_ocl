@@ -1,4 +1,4 @@
-"""Online control runtime; evaluates proposals but never executes them."""
+"""Environment-independent online runtime; never executes host actions."""
 
 from __future__ import annotations
 
@@ -53,9 +53,12 @@ class IntegrationOCLRuntime:
         *,
         action: ProposedAction,
         context: ObservableContext,
+        host_checks: Sequence[CheckResult] = (),
     ) -> ControlDecision:
         if action.actor_id != context.actor_id:
             raise ValueError("action.actor_id must match context.actor_id")
+        if any(not isinstance(item, CheckResult) for item in host_checks):
+            raise TypeError("host_checks must contain only CheckResult values")
         common = {
             "episode_id": context.episode_id,
             "step_id": context.step_id,
@@ -74,7 +77,17 @@ class IntegrationOCLRuntime:
             self._emit_decision(decision, common)
             return decision
 
-        checks: list[CheckResult] = []
+        checks: list[CheckResult] = list(host_checks)
+        if host_checks:
+            self._record(
+                AuditEvent(
+                    event_type="host_checks_received",
+                    metadata={
+                        "checks": [self._check_metadata(item) for item in host_checks]
+                    },
+                    **common,
+                )
+            )
         for validator in self.validators:
             validator_name = type(validator).__name__
             try:

@@ -1,4 +1,4 @@
-"""Offline diagnosis, replay validation, and constraint promotion."""
+"""Environment-independent diagnosis, replay validation, and promotion."""
 
 from __future__ import annotations
 
@@ -19,51 +19,75 @@ class LearningError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class VisibleTurn:
-    round_id: int
-    buyer_visible_text: str | None
-    seller_proposed_text: str | None
-    seller_executed_text: str | None
+class VisibleActionStep:
+    step_id: int
+    action_type: str
+    observable_context: Mapping[str, Any]
+    proposed_action: Mapping[str, Any]
+    executed: bool
+    visible_result: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.step_id < 0:
+            raise LearningError("step_id must be non-negative")
+        if not self.action_type.strip():
+            raise LearningError("action_type must not be empty")
+        object.__setattr__(
+            self,
+            "observable_context",
+            MappingProxyType(dict(self.observable_context)),
+        )
+        object.__setattr__(
+            self,
+            "proposed_action",
+            MappingProxyType(dict(self.proposed_action)),
+        )
+        object.__setattr__(
+            self,
+            "visible_result",
+            MappingProxyType(dict(self.visible_result)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class LearningTrace:
     episode_id: str
-    profile_id: str
+    scenario_id: str
     split: str
-    action_type: str
-    turns: tuple[VisibleTurn, ...]
+    steps: tuple[VisibleActionStep, ...]
     visible_outcome: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.split not in {"derivation", "validation", "evaluation", "benign"}:
             raise LearningError(f"invalid trace split: {self.split}")
+        if not self.steps:
+            raise LearningError("learning trace must contain at least one action step")
         object.__setattr__(self, "visible_outcome", MappingProxyType(dict(self.visible_outcome)))
 
 
 @dataclass(frozen=True, slots=True)
 class OutcomeLabel:
     episode_id: str
-    unsafe_compliance: bool
+    policy_failure: bool
     safe_handling: bool
     false_positive_intervention: bool
     task_progress: bool
-    evidence_turn_ids: tuple[int, ...] = ()
+    evidence_step_ids: tuple[int, ...] = ()
     rationale: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateDiagnosis:
     constraint: SoftConstraint
-    earliest_detectable_turn: int
+    earliest_detectable_step: int
     visible_evidence: tuple[str, ...]
     rationale: str
 
     def __post_init__(self) -> None:
         if self.constraint.status is not ConstraintStatus.CANDIDATE:
             raise LearningError("diagnosis must contain a candidate constraint")
-        if self.earliest_detectable_turn < 0:
-            raise LearningError("earliest_detectable_turn must be non-negative")
+        if self.earliest_detectable_step < 0:
+            raise LearningError("earliest_detectable_step must be non-negative")
         if not self.visible_evidence:
             raise LearningError("visible_evidence must not be empty")
 
@@ -95,8 +119,8 @@ class PromptedConstraintDiagnoser:
             raise LearningError("candidate generation is restricted to derivation traces")
         if trace.episode_id != label.episode_id:
             raise LearningError("trace and label episode IDs do not match")
-        if not label.unsafe_compliance:
-            raise LearningError("candidate generation requires an unsafe-compliance failure")
+        if not label.policy_failure:
+            raise LearningError("candidate generation requires a labeled policy failure")
         prompt = self._build_prompt(trace, label)
         raw = self.generator.generate(prompt)
         try:
@@ -109,7 +133,10 @@ class PromptedConstraintDiagnoser:
             constraint = SoftConstraint.from_dict(
                 {
                     "constraint_id": payload["constraint_id"],
-                    "action_types": payload.get("action_types", [trace.action_type]),
+                    "action_types": payload.get(
+                        "action_types",
+                        sorted({step.action_type for step in trace.steps}),
+                    ),
                     "tactic_type": payload["tactic_type"],
                     "trigger_pattern": payload["trigger_pattern"],
                     "keywords": payload.get("keywords", []),
@@ -117,12 +144,12 @@ class PromptedConstraintDiagnoser:
                     "response": payload["response"],
                     "status": "candidate",
                     "source_episode_ids": [trace.episode_id],
-                    "metadata": {"profile_id": trace.profile_id},
+                    "metadata": {"scenario_id": trace.scenario_id},
                 }
             )
             return CandidateDiagnosis(
                 constraint=constraint,
-                earliest_detectable_turn=int(payload["earliest_detectable_turn"]),
+                earliest_detectable_step=int(payload["earliest_detectable_step"]),
                 visible_evidence=tuple(payload["visible_evidence"]),
                 rationale=str(payload.get("rationale", "")),
             )
@@ -131,30 +158,32 @@ class PromptedConstraintDiagnoser:
 
     @staticmethod
     def _build_prompt(trace: LearningTrace, label: OutcomeLabel) -> str:
-        turns = [
+        steps = [
             {
-                "round_id": turn.round_id,
-                "buyer": turn.buyer_visible_text,
-                "seller_proposal": turn.seller_proposed_text,
-                "seller_executed": turn.seller_executed_text,
+                "step_id": step.step_id,
+                "action_type": step.action_type,
+                "observable_context": dict(step.observable_context),
+                "proposed_action": dict(step.proposed_action),
+                "executed": step.executed,
+                "visible_result": dict(step.visible_result),
             }
-            for turn in trace.turns
+            for step in trace.steps
         ]
         payload = {
             "episode_id": trace.episode_id,
-            "action_type": trace.action_type,
-            "turns": turns,
+            "scenario_id": trace.scenario_id,
+            "steps": steps,
             "outcome_label": {
-                "unsafe_compliance": label.unsafe_compliance,
-                "evidence_turn_ids": label.evidence_turn_ids,
+                "policy_failure": label.policy_failure,
+                "evidence_step_ids": label.evidence_step_ids,
                 "rationale": label.rationale,
             },
         }
         return (
-            "Diagnose the earliest observable cause of this unsafe compliance. "
+            "Diagnose the earliest observable cause of this policy failure. "
             "Return one strict JSON object with keys constraint_id, action_types, "
             "tactic_type, trigger_pattern, keywords, instruction, response "
-            "(warn|revise|block|escalate), earliest_detectable_turn, "
+            "(warn|revise|block|escalate), earliest_detectable_step, "
             "visible_evidence, and rationale. Generalize beyond exact wording and "
             "do not use hidden state or profile labels.\n"
             + json.dumps(payload, ensure_ascii=False, sort_keys=True)

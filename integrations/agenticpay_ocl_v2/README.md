@@ -1,32 +1,53 @@
-# AgenticPay A-OCL V2
+# AgenticPay A-OCL Adapter
 
-Independent adaptive organizational control runtime and AgenticPay adapter.
-The package separates an online action gate from an offline
-diagnose–validate–promote learning pipeline. It does not import the legacy
-repository package `aimai_ocl`.
-
-See [`DESIGN.md`](DESIGN.md) for the architecture, observability rules, and
-experiment protocol.
+Thin AgenticPay attachment for the environment-independent
+[`aocl_core`](../aocl_core/README.md). AgenticPay owns the dialogue and
+environment; the adapter asks A-OCL for a decision before a seller proposal is
+passed to `env.step()`.
 
 ## Install
 
+Install the shared core and this adapter together:
+
 ```bash
-python -m pip install -e integrations/agenticpay_ocl_v2
+python -m pip install -e integrations/aocl_core \
+  -e integrations/agenticpay_ocl_v2
 ```
 
-Core imports do not require AgenticPay. The real episode runner imports
-AgenticPay lazily when no test environment factory is supplied.
+AgenticPay itself remains an external dependency and is imported only by the
+real episode runner.
 
-## Online runtime
+## Small real-LLM demo
+
+The shortest useful path runs one privacy-phishing episode with separate buyer,
+seller, and semantic-gate calls. The seller is intentionally vulnerable so the
+demo tests the external execution gate rather than seller prompt alignment.
+
+```bash
+export OPENAI_API_KEY=...
+python -m agenticpay_ocl_v2.demo --model gpt-4o-mini --max-rounds 3
+```
+
+Or after installation:
+
+```bash
+agenticpay-ocl-v2-demo --model gpt-4o-mini --max-rounds 3
+```
+
+Each round prints the buyer message, unexecuted seller proposal, gate decision,
+and exact text reaching AgenticPay.
+
+## Compose the core and adapter
 
 ```python
-from agenticpay_ocl_v2 import (
+from aocl_core import (
     ControlMode,
     DeterministicLexicalRetriever,
     FrozenConstraintLibrary,
     IntegrationOCLRuntime,
     LexicalConstraintEvaluator,
 )
+from agenticpay_ocl_v2 import AgenticPayOCLAdapter, run_agenticpay_episode
 
 library = FrozenConstraintLibrary.from_jsonl("libraries/L001/constraints.jsonl")
 runtime = IntegrationOCLRuntime(
@@ -36,61 +57,8 @@ runtime = IntegrationOCLRuntime(
     retriever=DeterministicLexicalRetriever(top_k=3),
     constraint_evaluator=LexicalConstraintEvaluator(),
 )
+adapter = AgenticPayOCLAdapter(runtime)
 ```
 
-Attach it to the AgenticPay seller boundary:
-
-```python
-from agenticpay_ocl_v2.agenticpay_adapter import AgenticPayOCLAdapter
-from agenticpay_ocl_v2.agenticpay_runner import run_agenticpay_episode
-
-result = run_agenticpay_episode(
-    episode_id="run-001",
-    env_id="Task1_basic_price_negotiation-v0",
-    buyer_agent=buyer,
-    seller_agent=seller,
-    ocl_adapter=AgenticPayOCLAdapter(runtime),
-    reset_kwargs={...},
-    env_kwargs={...},
-)
-```
-
-The runtime never executes an action. The host runner executes only
-`approve`/`warn` proposals, may regenerate a `revise` proposal within a fixed
-budget, and sends `None` to AgenticPay for `block`/`escalate`.
-
-## Offline adaptive loop
-
-`AdaptiveLearningPipeline.process_failure(...)` performs one complete offline
-step:
-
-```text
-derivation trace + independent label
-  -> injected Meta-Agent diagnosis
-  -> candidate constraint
-  -> validation/benign replay
-  -> fixed promotion policy
-  -> immutable child library version
-```
-
-Only approved constraints are active online. A candidate cannot validate on
-its own source episode, and promotion requires both positive and negative
-replay cases.
-
-The prompted diagnoser and semantic evaluator accept small injected interfaces
-with `generate(prompt: str) -> str`; model-provider configuration remains owned
-by the host.
-
-## Data protocol
-
-- [`data/split_manifest_v1.json`](data/split_manifest_v1.json) defines stable
-  derivation, validation, evaluation, benign, and control IDs.
-- [`data/benign_buyers.json`](data/benign_buyers.json) supplies ten independently
-  authored benign controls.
-- `datasets.load_profiles` assigns deterministic IDs to the legacy profile file
-  when explicit IDs are absent and validates manifest disjointness.
-- `trace_export.learning_trace_from_run` converts a completed AgenticPay run to
-  an observable offline trace; `append_learning_trace` writes JSONL.
-
-Evaluation profiles must not feed candidate generation, validation, threshold
-selection, or library updates.
+The offline diagnose–validate–promote loop is provided by `aocl_core`. This
+package contributes only AgenticPay trace conversion and host execution logic.

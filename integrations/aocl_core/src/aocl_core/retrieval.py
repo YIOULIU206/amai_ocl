@@ -1,4 +1,4 @@
-"""Deterministic retrieval over observable action context."""
+"""Deterministic retrieval over observable host-action context."""
 
 from __future__ import annotations
 

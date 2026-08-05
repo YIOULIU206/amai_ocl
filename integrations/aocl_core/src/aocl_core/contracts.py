@@ -1,4 +1,4 @@
-"""Stable online contracts shared by runtimes and host adapters."""
+"""Stable online contracts shared by the A-OCL core and host adapters."""
 
 from __future__ import annotations
 

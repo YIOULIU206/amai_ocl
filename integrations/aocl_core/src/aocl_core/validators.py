@@ -1,4 +1,4 @@
-"""Generic validators; AgenticPay business rules are adapter-owned."""
+"""Generic validator protocols; host business rules remain adapter-owned."""
 
 from __future__ import annotations
 

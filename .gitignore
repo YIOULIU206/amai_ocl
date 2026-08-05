@@ -62,10 +62,16 @@ docs/
 !/readme_cn.md
 !/benchmarks/conversational_consumer_selection_v2/README.md
 !/integrations/
+!/integrations/aocl_core/
+!/integrations/aocl_core/DESIGN.md
+!/integrations/aocl_core/README.md
 !/integrations/coffeebench_ocl/
 !/integrations/coffeebench_ocl/README.md
 !/integrations/coffeebench_ocl/DESIGN.md
 !/integrations/agenticpay_ocl_v2/
 !/integrations/agenticpay_ocl_v2/DESIGN.md
 !/integrations/agenticpay_ocl_v2/README.md
+!/integrations/shoppingbench_ocl/
+!/integrations/shoppingbench_ocl/DESIGN.md
+!/integrations/shoppingbench_ocl/README.md
 local.txt
