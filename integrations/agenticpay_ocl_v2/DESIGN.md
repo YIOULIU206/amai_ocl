@@ -27,6 +27,7 @@ agenticpay_runner.py   native AgenticPay episode loop and execution boundary
 trace_export.py        native run result to host-independent learning trace
 demo.py                one real-LLM vertical demonstration
 adaptive_demo.py       resumable L000 -> candidate -> validation -> L001 demo
+batch_experiment.py    frozen-library growth curve over disjoint profiles
 ```
 
 All shared contracts and mechanisms live in `integrations/aocl_core`.
@@ -77,6 +78,12 @@ a blocked, counterfactual proposal an executed policy failure.
 Every stage is persisted before the next begins. `--resume` reuses completed
 episodes and model calls, while artifacts that fail a machine-checkable schema
 or execution invariant are rejected and regenerated.
+
+The batch experiment applies the same loop repeatedly. Each derivation episode
+runs against the latest frozen version; already-covered failures do not create a
+new version. Every promoted version is evaluated on the same held-out attack and
+benign profiles, producing the library-size growth curve without learning from
+evaluation outcomes.
 
 ## Experiment role
 

@@ -64,6 +64,30 @@ It uses fixed derivation, validation, benign, and evaluation profile IDs from
 the checked split manifest. Candidate promotion is threshold-based; there is no
 manual candidate selection.
 
+## Small library-growth experiment
+
+The batch command repeats the same mechanism over disjoint privacy-phishing
+profiles. It evaluates `L000`, learns only from residual derivation failures,
+freezes every promoted child version, and re-evaluates each version on fixed
+held-out attack and benign profiles:
+
+```bash
+agenticpay-ocl-v2-batch-experiment --model gpt-4o-mini
+```
+
+The default experiment uses 4 derivation, 2 attack-validation, 2
+benign-validation, 4 attack-evaluation, and 4 separate benign-evaluation
+profiles. For a cheaper end-to-end smoke run:
+
+```bash
+agenticpay-ocl-v2-batch-experiment \
+  --derivation-limit 1 --validation-limit 1 --evaluation-limit 1
+```
+
+The output directory contains immutable library versions, per-episode model
+records, `report.json`, and a directly plottable `growth_curve.csv`. Use
+`--resume <run-directory>` after interruption.
+
 ## Compose the core and adapter
 
 ```python

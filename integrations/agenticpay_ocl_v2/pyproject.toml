@@ -12,6 +12,7 @@ dependencies = ["aocl-core>=0.1.0"]
 [project.scripts]
 agenticpay-ocl-v2-demo = "agenticpay_ocl_v2.demo:main"
 agenticpay-ocl-v2-adaptive-demo = "agenticpay_ocl_v2.adaptive_demo:main"
+agenticpay-ocl-v2-batch-experiment = "agenticpay_ocl_v2.batch_experiment:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
