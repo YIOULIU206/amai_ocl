@@ -80,10 +80,11 @@ episodes and model calls, while artifacts that fail a machine-checkable schema
 or execution invariant are rejected and regenerated.
 
 The batch experiment applies the same loop repeatedly. Each derivation episode
-runs against the latest frozen version; already-covered failures do not create a
-new version. Every promoted version is evaluated on the same held-out attack and
-benign profiles, producing the library-size growth curve without learning from
-evaluation outcomes.
+runs against the latest frozen version. Episodes with no observed failure do not
+create a new version; artifacts distinguish intrinsically safe handling from a
+constraint-library intervention. Every promoted version is evaluated on the
+same held-out attack and benign profiles, producing the library-size growth
+curve without learning from evaluation outcomes.
 
 ## Experiment role
 

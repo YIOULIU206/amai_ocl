@@ -88,6 +88,20 @@ The output directory contains immutable library versions, per-episode model
 records, `report.json`, and a directly plottable `growth_curve.csv`. Use
 `--resume <run-directory>` after interruption.
 
+## Testing
+
+The protocol suite does not call an external model. It checks split isolation,
+semantic-judge execution aggregation, evidence repair, identifier collisions,
+and resume integrity:
+
+```bash
+PYTHONPATH=integrations/aocl_core/src:integrations/agenticpay_ocl_v2/src \
+  pytest -q integrations/agenticpay_ocl_v2/tests
+```
+
+The smoke and full batch commands above are the real-LLM integration tests;
+they are intentionally not part of the default offline test suite.
+
 ## Compose the core and adapter
 
 ```python

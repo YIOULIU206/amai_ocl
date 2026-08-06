@@ -35,6 +35,9 @@ from .datasets import Profile, SplitManifest, load_profiles
 from .trace_export import learning_trace_from_run
 
 
+LEARNING_OUTCOME_SCHEMA = 2
+
+
 def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
     if min(args.derivation_limit, args.validation_limit, args.evaluation_limit) <= 0:
         raise ValueError("all profile limits must be greater than zero")
@@ -180,7 +183,13 @@ def _unique_candidate(
     existing = {item.constraint_id for item in library.constraints}
     if candidate.constraint_id not in existing:
         return candidate
-    return replace(candidate, constraint_id=f"{candidate.constraint_id}__{profile_id}")
+    base = f"{candidate.constraint_id}__{profile_id}"
+    replacement = base
+    suffix = 2
+    while replacement in existing:
+        replacement = f"{base}__{suffix}"
+        suffix += 1
+    return replace(candidate, constraint_id=replacement)
 
 
 def _learning_step(
@@ -197,7 +206,31 @@ def _learning_step(
     outcome_path = step_dir / "outcome.json"
     if outcome_path.exists():
         print(f"[resume] learning step: {profile.profile_id}")
-        return _read_json(outcome_path)
+        outcome = _read_json(outcome_path)
+        if outcome.get("profile_id") != profile.profile_id:
+            raise RuntimeError("learning outcome belongs to another profile")
+        if outcome.get("parent_version") != parent.version_id:
+            raise RuntimeError("learning outcome parent version does not match")
+        if outcome.get("schema_version") != LEARNING_OUTCOME_SCHEMA:
+            if outcome.get("status") == "covered_without_new_constraint":
+                artifact = _read_json(step_dir / "derivation_episode.json")
+                activations = sum(
+                    event.get("event_type") == "constraint_activated"
+                    for event in artifact.get("audit_events", ())
+                )
+                outcome["status"] = (
+                    "covered_by_library" if activations else "no_observed_failure"
+                )
+            outcome["schema_version"] = LEARNING_OUTCOME_SCHEMA
+            _write_json(outcome_path, outcome)
+        if outcome.get("status") == "promoted":
+            version_id = str(outcome.get("version_id", ""))
+            child = store.load(version_id)
+            if outcome.get("library_digest") != child.library.digest:
+                raise RuntimeError("learning outcome library digest does not match")
+        elif outcome.get("version_id") != parent.version_id:
+            raise RuntimeError("non-promoted outcome changed the library version")
+        return outcome
     artifact = _load_or_run_episode(
         step_dir / "derivation_episode.json",
         stage=f"derivation_{profile.profile_id}_{parent.version_id}",
@@ -215,9 +248,15 @@ def _learning_step(
         stage=f"derivation_{profile.profile_id}_label",
     )
     if not label.policy_failure:
+        summary = _episode_summary(artifact, label)
         outcome = {
+            "schema_version": LEARNING_OUTCOME_SCHEMA,
             "profile_id": profile.profile_id,
-            "status": "covered_without_new_constraint",
+            "status": (
+                "covered_by_library"
+                if summary["constraint_activations"] > 0
+                else "no_observed_failure"
+            ),
             "parent_version": parent.version_id,
             "version_id": parent.version_id,
         }
@@ -255,6 +294,7 @@ def _learning_step(
     _write_json(step_dir / "promotion.json", promotion)
     if not promotion.approved:
         outcome = {
+            "schema_version": LEARNING_OUTCOME_SCHEMA,
             "profile_id": profile.profile_id,
             "status": "candidate_rejected",
             "parent_version": parent.version_id,
@@ -277,6 +317,7 @@ def _learning_step(
             version_id=version_id,
         )
     outcome = {
+        "schema_version": LEARNING_OUTCOME_SCHEMA,
         "profile_id": profile.profile_id,
         "status": "promoted",
         "parent_version": parent.version_id,
@@ -304,7 +345,12 @@ def _evaluate_version(
     metrics_path = version_dir / "metrics.json"
     if metrics_path.exists():
         print(f"[resume] evaluation: {version.version_id}")
-        return _read_json(metrics_path)
+        metrics = _read_json(metrics_path)
+        if metrics.get("version_id") != version.version_id:
+            raise RuntimeError("evaluation metrics belong to another version")
+        if metrics.get("library_digest") != version.library.digest:
+            raise RuntimeError("evaluation metrics library digest does not match")
+        return metrics
     records: list[dict[str, Any]] = []
     groups = (
         ("attack", config["evaluation_attack_profile_ids"]),

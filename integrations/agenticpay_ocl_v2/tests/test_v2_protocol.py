@@ -1,0 +1,369 @@
+"""Protocol tests for adaptive AgenticPay V2 experiments."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from aocl_core.contracts import ObservableContext, ProposedAction
+from aocl_core.evaluators import PromptedSemanticConstraintEvaluator
+from aocl_core.learning import (
+    LearningTrace,
+    OutcomeLabel,
+    PromptedConstraintDiagnoser,
+    VisibleActionStep,
+)
+from aocl_core.library import (
+    ConstraintResponse,
+    ConstraintStatus,
+    FrozenConstraintLibrary,
+    SoftConstraint,
+)
+from aocl_core.retrieval import RetrievedConstraint
+from aocl_core.versioning import LibraryVersion, VersionedLibraryStore
+from agenticpay_ocl_v2.adaptive_demo import _judge_episode
+from agenticpay_ocl_v2.agenticpay_runner import (
+    AgenticPayProposalRecord,
+    AgenticPayRunResult,
+    AgenticPayTurnRecord,
+)
+from agenticpay_ocl_v2.batch_experiment import (
+    _batch_config,
+    _evaluate_version,
+    _learning_step,
+    _unique_candidate,
+    build_parser,
+)
+from agenticpay_ocl_v2.datasets import Profile
+
+
+class ScriptedGenerator:
+    def __init__(self, *responses: str) -> None:
+        self.responses = list(responses)
+        self.records: list[dict[str, str]] = []
+
+    def generate(self, prompt: str) -> str:
+        response = self.responses.pop(0)
+        self.records.append({"prompt": prompt, "response": response})
+        return response
+
+
+class StubProvider:
+    def __init__(self, generator: ScriptedGenerator) -> None:
+        self.generator = generator
+
+    def json_generator(self, *, max_tokens: int = 800) -> ScriptedGenerator:
+        return self.generator
+
+
+def _constraint(
+    constraint_id: str = "payment_rule",
+    *,
+    status: ConstraintStatus = ConstraintStatus.CANDIDATE,
+) -> SoftConstraint:
+    return SoftConstraint(
+        constraint_id=constraint_id,
+        action_types=("commerce.respond",),
+        tactic_type="off-platform payment",
+        trigger_pattern="accept direct bank transfer",
+        keywords=("bank transfer", "payment"),
+        instruction="Block off-platform payment facilitation.",
+        response=ConstraintResponse.BLOCK,
+        status=status,
+        source_episode_ids=("episode-1",),
+    )
+
+
+def _run_result(*, executed: bool) -> AgenticPayRunResult:
+    proposed = "You can type your credit card number here."
+    return AgenticPayRunResult(
+        episode_id="episode-eval",
+        turns=(
+            AgenticPayTurnRecord(
+                round_id=0,
+                buyer_visible_text="How should I pay?",
+                proposals=(
+                    AgenticPayProposalRecord(
+                        action_id="action-1",
+                        proposed_text=proposed,
+                        decision="approve" if executed else "block",
+                        executed=executed,
+                        message=None,
+                    ),
+                ),
+                seller_executed_text=proposed if executed else None,
+            ),
+        ),
+        final_info={"status": "timeout", "round": 1},
+    )
+
+
+def test_batch_config_keeps_all_experiment_splits_disjoint() -> None:
+    args = build_parser().parse_args(
+        ["--derivation-limit", "2", "--validation-limit", "2", "--evaluation-limit", "2"]
+    )
+
+    config = _batch_config(args)
+    groups = [
+        set(config[key])
+        for key in (
+            "derivation_profile_ids",
+            "validation_attack_profile_ids",
+            "validation_benign_profile_ids",
+            "evaluation_attack_profile_ids",
+            "evaluation_benign_profile_ids",
+        )
+    ]
+
+    for index, group in enumerate(groups):
+        assert all(not group.intersection(other) for other in groups[index + 1 :])
+
+
+def test_batch_config_rejects_non_positive_limits() -> None:
+    args = build_parser().parse_args(["--derivation-limit", "0"])
+
+    with pytest.raises(ValueError, match="greater than zero"):
+        _batch_config(args)
+
+
+def test_judge_combines_semantic_violation_with_execution_flag(tmp_path) -> None:
+    generator = ScriptedGenerator(
+        json.dumps(
+            {
+                "unsafe_proposal_step_ids": [0],
+                "task_progress": False,
+                "rationale": "The seller requests card information.",
+            }
+        )
+    )
+
+    label = _judge_episode(
+        tmp_path / "label.json",
+        provider=StubProvider(generator),
+        result=_run_result(executed=False),
+        stage="test",
+    )
+
+    assert label.policy_failure is False
+    assert label.safe_handling is True
+    assert label.false_positive_intervention is False
+    assert label.evidence_step_ids == (0,)
+
+
+def test_judge_marks_blocked_safe_proposal_as_false_positive(tmp_path) -> None:
+    generator = ScriptedGenerator(
+        json.dumps(
+            {
+                "unsafe_proposal_step_ids": [],
+                "task_progress": False,
+                "rationale": "The seller proposal is safe.",
+            }
+        )
+    )
+
+    label = _judge_episode(
+        tmp_path / "label.json",
+        provider=StubProvider(generator),
+        result=_run_result(executed=False),
+        stage="test",
+    )
+
+    assert label.policy_failure is False
+    assert label.false_positive_intervention is True
+    assert label.evidence_step_ids == (0,)
+
+
+def test_semantic_gate_repairs_ungrounded_evidence() -> None:
+    generator = ScriptedGenerator(
+        json.dumps(
+            {
+                "activations": [
+                    {
+                        "constraint_id": "payment_rule",
+                        "activated": True,
+                        "evidence": "the buyer asked for it",
+                        "reason": "unsafe payment",
+                    }
+                ]
+            }
+        ),
+        json.dumps(
+            {
+                "activations": [
+                    {
+                        "constraint_id": "payment_rule",
+                        "activated": True,
+                        "evidence": "send payment by bank transfer",
+                        "reason": "unsafe payment",
+                    }
+                ]
+            }
+        ),
+    )
+    evaluator = PromptedSemanticConstraintEvaluator(generator)
+    constraint = _constraint(status=ConstraintStatus.APPROVED)
+
+    checks = evaluator.evaluate(
+        ProposedAction(
+            action_id="action-1",
+            actor_id="seller",
+            action_type="commerce.respond",
+            visible_text="Please send payment by bank transfer.",
+        ),
+        ObservableContext(episode_id="episode-1", step_id=0, actor_id="seller"),
+        (RetrievedConstraint(constraint=constraint, score=4.0, rank=1),),
+    )
+
+    assert len(checks) == 1
+    assert checks[0].recommended_decision.value == "block"
+    assert len(generator.records) == 2
+
+
+def test_diagnoser_accepts_one_string_as_one_visible_excerpt() -> None:
+    generator = ScriptedGenerator(
+        json.dumps(
+            {
+                "constraint_id": "payment_rule",
+                "action_types": ["commerce.respond"],
+                "tactic_type": "off-platform payment",
+                "trigger_pattern": "accept bank transfer",
+                "keywords": ["bank transfer"],
+                "instruction": "Block direct payment facilitation.",
+                "response": "block",
+                "earliest_detectable_step": 0,
+                "visible_evidence": "accept a bank transfer",
+                "rationale": "The proposal facilitates direct payment.",
+            }
+        )
+    )
+    trace = LearningTrace(
+        episode_id="episode-1",
+        scenario_id="privacy_phisher_001",
+        split="derivation",
+        steps=(
+            VisibleActionStep(
+                step_id=0,
+                action_type="commerce.respond",
+                observable_context={},
+                proposed_action={"visible_text": "I accept a bank transfer."},
+                executed=True,
+            ),
+        ),
+    )
+
+    diagnosis = PromptedConstraintDiagnoser(generator).diagnose(
+        trace,
+        OutcomeLabel(
+            episode_id="episode-1",
+            policy_failure=True,
+            safe_handling=False,
+            false_positive_intervention=False,
+            task_progress=False,
+            evidence_step_ids=(0,),
+        ),
+    )
+
+    assert diagnosis.visible_evidence == ("accept a bank transfer",)
+    assert diagnosis.constraint.response is ConstraintResponse.BLOCK
+
+
+def test_unique_candidate_handles_repeated_identifier_collisions() -> None:
+    library = FrozenConstraintLibrary(
+        (
+            _constraint("payment_rule", status=ConstraintStatus.APPROVED),
+            _constraint(
+                "payment_rule__privacy_phisher_002",
+                status=ConstraintStatus.APPROVED,
+            ),
+        )
+    )
+
+    renamed = _unique_candidate(_constraint(), library, "privacy_phisher_002")
+
+    assert renamed.constraint_id == "payment_rule__privacy_phisher_002__2"
+
+
+def test_resume_rejects_learning_outcome_with_wrong_parent(tmp_path) -> None:
+    step_dir = tmp_path / "steps" / "01"
+    step_dir.mkdir(parents=True)
+    (step_dir / "outcome.json").write_text(
+        json.dumps(
+            {
+                "profile_id": "privacy_phisher_001",
+                "status": "covered_without_new_constraint",
+                "parent_version": "L999",
+                "version_id": "L999",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parent = LibraryVersion("L000", tmp_path / "L000", FrozenConstraintLibrary(), {})
+    profile = Profile("privacy_phisher_001", "privacy_phisher", "Buyer", "Prompt", {})
+
+    with pytest.raises(RuntimeError, match="parent version"):
+        _learning_step(
+            step_dir,
+            provider=None,
+            config={},
+            profile=profile,
+            parent=parent,
+            store=VersionedLibraryStore(tmp_path / "libraries"),
+            validation_cases=(),
+            next_version_number=1,
+        )
+
+
+def test_resume_migrates_ambiguous_no_failure_outcome(tmp_path) -> None:
+    step_dir = tmp_path / "steps" / "01"
+    step_dir.mkdir(parents=True)
+    (step_dir / "outcome.json").write_text(
+        json.dumps(
+            {
+                "profile_id": "privacy_phisher_001",
+                "status": "covered_without_new_constraint",
+                "parent_version": "L000",
+                "version_id": "L000",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (step_dir / "derivation_episode.json").write_text(
+        json.dumps({"audit_events": []}),
+        encoding="utf-8",
+    )
+    parent = LibraryVersion("L000", tmp_path / "L000", FrozenConstraintLibrary(), {})
+    profile = Profile("privacy_phisher_001", "privacy_phisher", "Buyer", "Prompt", {})
+
+    outcome = _learning_step(
+        step_dir,
+        provider=None,
+        config={},
+        profile=profile,
+        parent=parent,
+        store=VersionedLibraryStore(tmp_path / "libraries"),
+        validation_cases=(),
+        next_version_number=1,
+    )
+
+    assert outcome["status"] == "no_observed_failure"
+    assert outcome["schema_version"] == 2
+
+
+def test_resume_rejects_metrics_from_another_library(tmp_path) -> None:
+    version = LibraryVersion("L001", tmp_path / "L001", FrozenConstraintLibrary(), {})
+    metrics_path = tmp_path / "evaluations" / "L001" / "metrics.json"
+    metrics_path.parent.mkdir(parents=True)
+    metrics_path.write_text(
+        json.dumps({"version_id": "L001", "library_digest": "wrong"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="digest"):
+        _evaluate_version(
+            tmp_path,
+            provider=None,
+            config={},
+            profiles={},
+            version=version,
+        )
