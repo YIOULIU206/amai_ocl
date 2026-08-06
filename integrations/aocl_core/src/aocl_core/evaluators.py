@@ -145,15 +145,6 @@ class PromptedSemanticConstraintEvaluator:
             "and do not infer hidden state.\n"
             + json.dumps(payload, ensure_ascii=False, sort_keys=True)
         )
-        try:
-            response = json.loads(self.generator.generate(prompt))
-            activations = response["activations"]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise ValueError(f"semantic evaluator returned invalid JSON: {exc}") from exc
-        if not isinstance(activations, list):
-            raise ValueError("semantic evaluator activations must be a list")
-        results: list[CheckResult] = []
-        seen: set[str] = set()
         action_corpus = normalize_text(
             " ".join(
                 (
@@ -162,22 +153,50 @@ class PromptedSemanticConstraintEvaluator:
                 )
             )
         )
-        for activation in activations:
-            if not isinstance(activation, dict):
-                raise ValueError("semantic activation must be an object")
-            constraint_id = str(activation.get("constraint_id", ""))
-            if constraint_id not in allowed:
-                raise ValueError("semantic evaluator referenced an unretrieved constraint")
-            if constraint_id in seen:
-                raise ValueError("semantic evaluator returned a duplicate constraint")
-            seen.add(constraint_id)
-            if activation.get("activated") is not True:
-                continue
-            evidence = str(activation.get("evidence", "")).strip()
-            if not evidence or normalize_text(evidence) not in action_corpus:
+        raw_response = self.generator.generate(prompt)
+        activations: list[object] = []
+        for attempt in range(2):
+            try:
+                response = json.loads(raw_response)
+                activations = response["activations"]
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise ValueError(
+                    f"semantic evaluator returned invalid JSON: {exc}"
+                ) from exc
+            if not isinstance(activations, list):
+                raise ValueError("semantic evaluator activations must be a list")
+            ungrounded = _validate_activations(activations, allowed, action_corpus)
+            if ungrounded is None:
+                break
+            if attempt == 1:
                 raise ValueError(
                     "semantic activation evidence is not grounded in the proposed action"
                 )
+            repair_prompt = (
+                "Repair the previous strict-JSON activation response. For every "
+                "activated=true item, evidence must be copied verbatim from the "
+                "serialized proposed action below. If the action itself provides "
+                "no such evidence, set activated=false. Return only the corrected "
+                "JSON object.\n"
+                + json.dumps(
+                    {
+                        "action": payload["action"],
+                        "previous_response": response,
+                        "ungrounded_evidence": ungrounded,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            raw_response = self.generator.generate(repair_prompt)
+
+        results: list[CheckResult] = []
+        for activation in activations:
+            assert isinstance(activation, dict)
+            constraint_id = str(activation.get("constraint_id", ""))
+            if activation.get("activated") is not True:
+                continue
+            evidence = str(activation.get("evidence", "")).strip()
             retrieved = allowed[constraint_id]
             item = retrieved.constraint
             results.append(
@@ -197,3 +216,26 @@ class PromptedSemanticConstraintEvaluator:
                 )
             )
         return tuple(results)
+
+
+def _validate_activations(
+    activations: Sequence[object],
+    allowed: dict[str, RetrievedConstraint],
+    action_corpus: str,
+) -> str | None:
+    seen: set[str] = set()
+    for activation in activations:
+        if not isinstance(activation, dict):
+            raise ValueError("semantic activation must be an object")
+        constraint_id = str(activation.get("constraint_id", ""))
+        if constraint_id not in allowed:
+            raise ValueError("semantic evaluator referenced an unretrieved constraint")
+        if constraint_id in seen:
+            raise ValueError("semantic evaluator returned a duplicate constraint")
+        seen.add(constraint_id)
+        if activation.get("activated") is not True:
+            continue
+        evidence = str(activation.get("evidence", "")).strip()
+        if not evidence or normalize_text(evidence) not in action_corpus:
+            return evidence
+    return None

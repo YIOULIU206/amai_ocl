@@ -16,6 +16,7 @@ def learning_trace_from_run(
     profile_id: str,
     split: str,
     action_type: str = "commerce.respond",
+    include_control_metadata: bool = True,
 ) -> LearningTrace:
     steps: list[VisibleActionStep] = []
     for turn in result.turns:
@@ -33,13 +34,21 @@ def learning_trace_from_run(
                         "visible_text": proposal.proposed_text,
                     },
                     executed=proposal.executed,
-                    visible_result={
-                        "decision": proposal.decision,
-                        "message": proposal.message,
-                        "executed_text": (
-                            turn.seller_executed_text if proposal.executed else None
-                        ),
-                    },
+                    visible_result=(
+                        {
+                            "decision": proposal.decision,
+                            "message": proposal.message,
+                            "executed_text": (
+                                turn.seller_executed_text if proposal.executed else None
+                            ),
+                        }
+                        if include_control_metadata
+                        else {
+                            "executed_text": (
+                                turn.seller_executed_text if proposal.executed else None
+                            )
+                        }
+                    ),
                 )
             )
     return LearningTrace(
@@ -49,6 +58,35 @@ def learning_trace_from_run(
         steps=tuple(steps),
         visible_outcome=dict(result.final_info),
     )
+
+
+def judge_view_from_run(result: AgenticPayRunResult) -> dict[str, object]:
+    """Return a transcript view with no arm, decision, constraint, or library data."""
+
+    steps: list[dict[str, object]] = []
+    for turn in result.turns:
+        for proposal in turn.proposals:
+            steps.append(
+                {
+                    "step_id": len(steps),
+                    "round_id": turn.round_id,
+                    "buyer_text": turn.buyer_visible_text,
+                    "seller_proposed_text": proposal.proposed_text,
+                    "seller_executed_text": (
+                        turn.seller_executed_text if proposal.executed else None
+                    ),
+                    "executed": proposal.executed,
+                }
+            )
+    return {
+        "episode_id": result.episode_id,
+        "steps": steps,
+        "visible_outcome": {
+            key: result.final_info.get(key)
+            for key in ("status", "round", "seller_reward", "buyer_reward")
+            if key in result.final_info
+        },
+    }
 
 
 def append_learning_trace(path: str | Path, trace: LearningTrace) -> None:

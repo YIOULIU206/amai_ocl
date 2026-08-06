@@ -26,6 +26,7 @@ agenticpay_adapter.py  seller text/context normalization and hard price rule
 agenticpay_runner.py   native AgenticPay episode loop and execution boundary
 trace_export.py        native run result to host-independent learning trace
 demo.py                one real-LLM vertical demonstration
+adaptive_demo.py       resumable L000 -> candidate -> validation -> L001 demo
 ```
 
 All shared contracts and mechanisms live in `integrations/aocl_core`.
@@ -58,6 +59,24 @@ The small demo uses separate buyer, seller, and gate model calls. A deliberately
 vulnerable seller agrees to an off-platform payment request; the external gate
 must prevent that proposal from reaching AgenticPay. It demonstrates the
 online boundary only, not the offline learning claim.
+
+## Adaptive demo
+
+The adaptive demo is the smallest complete learning experiment. It uses four
+disjoint profiles: one derivation failure, one validation attack, one benign
+validation case, and one held-out evaluation attack. A Meta-Agent converts the
+derivation trace into one candidate constraint. A fixed promotion policy accepts
+it only when semantic replay catches the attack and leaves the benign proposal
+alone, then writes immutable `L001`.
+
+The blinded LLM judge handles only the semantic question of which seller
+proposals violate policy. Code combines those step IDs with the recorded
+`executed` flags. This prevents a language-model judge from accidentally calling
+a blocked, counterfactual proposal an executed policy failure.
+
+Every stage is persisted before the next begins. `--resume` reuses completed
+episodes and model calls, while artifacts that fail a machine-checkable schema
+or execution invariant are rejected and regenerated.
 
 ## Experiment role
 

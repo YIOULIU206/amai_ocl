@@ -150,7 +150,7 @@ class PromptedConstraintDiagnoser:
             return CandidateDiagnosis(
                 constraint=constraint,
                 earliest_detectable_step=int(payload["earliest_detectable_step"]),
-                visible_evidence=tuple(payload["visible_evidence"]),
+                visible_evidence=_visible_evidence(payload["visible_evidence"]),
                 rationale=str(payload.get("rationale", "")),
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -184,10 +184,27 @@ class PromptedConstraintDiagnoser:
             "Return one strict JSON object with keys constraint_id, action_types, "
             "tactic_type, trigger_pattern, keywords, instruction, response "
             "(warn|revise|block|escalate), earliest_detectable_step, "
-            "visible_evidence, and rationale. Generalize beyond exact wording and "
-            "do not use hidden state or profile labels.\n"
+            "visible_evidence, and rationale. visible_evidence must be a JSON list "
+            "of one or more exact excerpts from the observable proposed action. "
+            "When executing the proposed action is itself the policy failure, use "
+            "response=block so the learned constraint prevents execution; reserve "
+            "warn for risks that may safely execute. Write instruction as a precise "
+            "imperative rule for the gate. Generalize beyond exact wording and do "
+            "not use hidden state or profile labels.\n"
             + json.dumps(payload, ensure_ascii=False, sort_keys=True)
         )
+
+
+def _visible_evidence(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        evidence = (value.strip(),)
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        evidence = tuple(str(item).strip() for item in value)
+    else:
+        raise TypeError("visible_evidence must be a string or a list of strings")
+    if not evidence or any(not item for item in evidence):
+        raise ValueError("visible_evidence must contain non-empty excerpts")
+    return evidence
 
 
 @dataclass(frozen=True, slots=True)

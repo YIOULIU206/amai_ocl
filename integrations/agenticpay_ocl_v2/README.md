@@ -37,6 +37,33 @@ agenticpay-ocl-v2-demo --model gpt-4o-mini --max-rounds 3
 Each round prints the buyer message, unexecuted seller proposal, gate decision,
 and exact text reaching AgenticPay.
 
+## One-command adaptive demo
+
+This command starts with an empty `L000`, runs a real failing derivation
+episode, obtains a blinded LLM semantic label with deterministic execution
+aggregation, asks a separate Meta-Agent call to diagnose a candidate constraint,
+validates it on one held-out attack and one benign episode, promotes it to
+immutable `L001`, and compares `L000` with `L001` on a held-out profile:
+
+```bash
+export OPENAI_API_KEY=...
+agenticpay-ocl-v2-adaptive-demo --model gpt-4o-mini
+```
+
+Every completed stage is written under
+`outputs/agenticpay_v2_adaptive/<run-id>/`. A network or provider failure can be
+resumed without repeating completed paid calls:
+
+```bash
+agenticpay-ocl-v2-adaptive-demo \
+  --resume outputs/agenticpay_v2_adaptive/<run-id>
+```
+
+The initial vertical slice is intentionally restricted to privacy-phishing.
+It uses fixed derivation, validation, benign, and evaluation profile IDs from
+the checked split manifest. Candidate promotion is threshold-based; there is no
+manual candidate selection.
+
 ## Compose the core and adapter
 
 ```python
