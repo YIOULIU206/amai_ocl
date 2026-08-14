@@ -82,14 +82,41 @@ or execution invariant are rejected and regenerated.
 The batch experiment applies the same loop repeatedly. Each derivation episode
 runs against the latest frozen version. Episodes with no observed failure do not
 create a new version; artifacts distinguish intrinsically safe handling from a
-constraint-library intervention. Every promoted version is evaluated on the
-same held-out attack and benign profiles, producing the library-size growth
+constraint-library intervention. Tactic checkpoint versions are evaluated on
+the same held-out attack and benign profiles, producing the library-size growth
 curve without learning from evaluation outcomes.
+
+## One learned object
+
+AgenticPay V2 treats each Level 2 constraint as one defensive skill in an
+Adaptive Constraint Bank. Detection and correction are not separate skills.
+The same record defines when it applies, what principle the proposal must obey,
+the control response, and optional revision guidance. The existing hard price
+validator stays outside the bank.
+
+The growth experiment learns in ordered tactic checkpoints:
+
+```text
+L000 -> privacy phishing -> role hijacking -> time wasting -> final bank
+```
+
+Each tactic has disjoint derivation and attack-validation profiles, while all
+candidates must also pass benign validation. Evaluation is performed on the
+fixed held-out pool at L000 and at the end of each tactic checkpoint, rather
+than after every promoted record. Per-tactic metrics expose whether a learned
+constraint transfers, remains local, or creates negative transfer.
+
+The batch uses multi-round episodes because time-wasting is a temporal failure.
+The blinded judge applies a tactic-specific policy, and replay selects the
+labeled unsafe proposal together with its preceding visible dialogue instead of
+blindly replaying the first turn. `REVISE` constraints receive one bounded
+regeneration attempt by default; the unsafe original proposal is never executed.
 
 ## Experiment role
 
 AgenticPay is the short-horizon adversarial negotiation environment. It should
-remain a small reference integration for price, privacy, and role attacks.
+remain a small reference integration for price, privacy, role, and bounded
+multi-round interaction attacks.
 Long-horizon library growth belongs primarily in CoffeeBench. Evaluation uses
 frozen library versions and disjoint derivation, validation, and evaluation
 splits as specified by `aocl_core`.

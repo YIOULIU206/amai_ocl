@@ -30,6 +30,13 @@ class ConstraintStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class ConstraintScope(str, Enum):
+    """Retrieval scope for one learned defensive constraint."""
+
+    GENERAL = "general"
+    TASK_SPECIFIC = "task_specific"
+
+
 def _nonempty(value: str, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise LibraryError(f"{name} must be a non-empty string")
@@ -90,7 +97,36 @@ class SoftConstraint:
         )
         if not isinstance(self.metadata, Mapping):
             raise LibraryError("metadata must be a mapping")
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        metadata = dict(self.metadata)
+        try:
+            ConstraintScope(
+                metadata.get("scope", ConstraintScope.TASK_SPECIFIC.value)
+            )
+        except (TypeError, ValueError) as exc:
+            raise LibraryError(
+                f"invalid constraint scope: {metadata.get('scope')}"
+            ) from exc
+        revision_guidance = metadata.get("revision_guidance")
+        if revision_guidance is not None and (
+            not isinstance(revision_guidance, str) or not revision_guidance.strip()
+        ):
+            raise LibraryError("revision_guidance must be a non-empty string or null")
+        object.__setattr__(self, "metadata", MappingProxyType(metadata))
+
+    @property
+    def scope(self) -> ConstraintScope:
+        """Return the learned constraint's scope without changing legacy JSONL."""
+
+        return ConstraintScope(
+            self.metadata.get("scope", ConstraintScope.TASK_SPECIFIC.value)
+        )
+
+    @property
+    def revision_guidance(self) -> str | None:
+        """Optional corrective instruction carried by the same constraint record."""
+
+        value = self.metadata.get("revision_guidance")
+        return str(value).strip() if value is not None else None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "SoftConstraint":
@@ -188,3 +224,8 @@ class FrozenConstraintLibrary:
             json.dumps(item.to_dict(), ensure_ascii=False, sort_keys=True) + "\n"
             for item in ordered
         )
+
+
+# New code may use the research-facing name while legacy integrations keep the
+# original class name and serialized format.
+FrozenConstraintBank = FrozenConstraintLibrary

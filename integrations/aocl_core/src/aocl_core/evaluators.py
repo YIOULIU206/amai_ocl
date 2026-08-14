@@ -61,6 +61,9 @@ class LexicalConstraintEvaluator:
         results: list[CheckResult] = []
         for retrieved in constraints:
             item = retrieved.constraint
+            reason = item.instruction
+            if item.response is ConstraintResponse.REVISE and item.revision_guidance:
+                reason = item.revision_guidance
             keyword_matches = tuple(
                 keyword
                 for keyword in item.keywords
@@ -79,7 +82,7 @@ class LexicalConstraintEvaluator:
                     check_id=item.constraint_id,
                     passed=False,
                     level=_LEVELS[item.response],
-                    reason=item.instruction,
+                    reason=reason,
                     source="constraint_library",
                     recommended_decision=_DECISIONS[item.response],
                     metadata={
@@ -89,6 +92,8 @@ class LexicalConstraintEvaluator:
                         "retrieval_score": retrieved.score,
                         "keyword_matches": keyword_matches,
                         "trigger_token_matches": tuple(sorted(overlap)),
+                        "scope": item.scope.value,
+                        "revision_guidance": item.revision_guidance,
                     },
                 )
             )
@@ -124,6 +129,8 @@ class PromptedSemanticConstraintEvaluator:
                     "trigger_pattern": item.constraint.trigger_pattern,
                     "instruction": item.constraint.instruction,
                     "response": item.constraint.response.value,
+                    "scope": item.constraint.scope.value,
+                    "revision_guidance": item.constraint.revision_guidance,
                 }
                 for item in constraints
             ],
@@ -199,12 +206,15 @@ class PromptedSemanticConstraintEvaluator:
             evidence = str(activation.get("evidence", "")).strip()
             retrieved = allowed[constraint_id]
             item = retrieved.constraint
+            reason = str(activation.get("reason") or item.instruction)
+            if item.response is ConstraintResponse.REVISE and item.revision_guidance:
+                reason = item.revision_guidance
             results.append(
                 CheckResult(
                     check_id=constraint_id,
                     passed=False,
                     level=_LEVELS[item.response],
-                    reason=str(activation.get("reason") or item.instruction),
+                    reason=reason,
                     source="semantic_constraint_evaluator",
                     recommended_decision=_DECISIONS[item.response],
                     metadata={
@@ -212,6 +222,8 @@ class PromptedSemanticConstraintEvaluator:
                         "evidence": evidence,
                         "retrieval_rank": retrieved.rank,
                         "retrieval_score": retrieved.score,
+                        "scope": item.scope.value,
+                        "revision_guidance": item.revision_guidance,
                     },
                 )
             )

@@ -20,6 +20,9 @@ python -m pip install -e integrations/aocl_core \
   -e integrations/agenticpay_ocl_v2
 ```
 
-Only approved entries from an immutable `FrozenConstraintLibrary` participate
-online. Candidate generation, replay validation, and promotion remain offline;
-evaluation runs never mutate the active library.
+Only approved entries from an immutable Adaptive Constraint Bank participate
+online. The backward-compatible Python names are `FrozenConstraintLibrary` and
+its alias `FrozenConstraintBank`. One learned constraint carries its trigger,
+defensive principle, control response, and optional revision guidance; there is
+no separate repair-skill type. Candidate generation, replay validation, and
+promotion remain offline, and evaluation runs never mutate the active bank.

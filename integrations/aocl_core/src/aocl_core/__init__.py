@@ -13,7 +13,9 @@ from .contracts import (
 from .evaluators import LexicalConstraintEvaluator, PromptedSemanticConstraintEvaluator
 from .library import (
     ConstraintResponse,
+    ConstraintScope,
     ConstraintStatus,
+    FrozenConstraintBank,
     FrozenConstraintLibrary,
     SoftConstraint,
 )
@@ -26,12 +28,14 @@ __all__ = [
     "CheckLevel",
     "CheckResult",
     "ConstraintResponse",
+    "ConstraintScope",
     "ConstraintStatus",
     "ControlDecision",
     "ControlMode",
     "DecisionType",
     "DeterministicLexicalRetriever",
     "FrozenConstraintLibrary",
+    "FrozenConstraintBank",
     "InMemoryAuditSink",
     "IntegrationOCLRuntime",
     "JsonlAuditSink",

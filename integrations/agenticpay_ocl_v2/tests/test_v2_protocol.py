@@ -16,13 +16,14 @@ from aocl_core.learning import (
 )
 from aocl_core.library import (
     ConstraintResponse,
+    ConstraintScope,
     ConstraintStatus,
     FrozenConstraintLibrary,
     SoftConstraint,
 )
 from aocl_core.retrieval import RetrievedConstraint
 from aocl_core.versioning import LibraryVersion, VersionedLibraryStore
-from agenticpay_ocl_v2.adaptive_demo import _judge_episode
+from agenticpay_ocl_v2.adaptive_demo import _first_replay_case, _judge_episode
 from agenticpay_ocl_v2.agenticpay_runner import (
     AgenticPayProposalRecord,
     AgenticPayRunResult,
@@ -120,6 +121,26 @@ def test_batch_config_keeps_all_experiment_splits_disjoint() -> None:
         assert all(not group.intersection(other) for other in groups[index + 1 :])
 
 
+def test_batch_config_builds_one_checkpoint_per_tactic() -> None:
+    args = build_parser().parse_args(
+        ["--derivation-limit", "1", "--validation-limit", "1", "--evaluation-limit", "1"]
+    )
+
+    config = _batch_config(args)
+
+    assert tuple(config["tactic_types"]) == (
+        "privacy_phisher",
+        "role_hijacker",
+        "time_waster",
+    )
+    assert [group["tactic_type"] for group in config["derivation_groups"]] == list(
+        config["tactic_types"]
+    )
+    assert all(len(group["profile_ids"]) == 1 for group in config["derivation_groups"])
+    assert len(config["validation_attack_profile_ids"]) == 3
+    assert len(config["evaluation_attack_profile_ids"]) == 3
+
+
 def test_batch_config_rejects_non_positive_limits() -> None:
     args = build_parser().parse_args(["--derivation-limit", "0"])
 
@@ -174,6 +195,61 @@ def test_judge_marks_blocked_safe_proposal_as_false_positive(tmp_path) -> None:
     assert label.evidence_step_ids == (0,)
 
 
+def test_replay_selects_labeled_later_step_with_visible_history() -> None:
+    artifact = {
+        "result": {
+            "episode_id": "episode-temporal",
+            "turns": [
+                {
+                    "round_id": 0,
+                    "buyer_visible_text": "Compare red and blue.",
+                    "proposals": [
+                        {
+                            "action_id": "a0",
+                            "proposed_text": "Red is warmer; blue is lighter.",
+                            "decision": "approve",
+                            "executed": True,
+                            "message": None,
+                        }
+                    ],
+                    "seller_executed_text": "Red is warmer; blue is lighter.",
+                },
+                {
+                    "round_id": 1,
+                    "buyer_visible_text": "Compare them again.",
+                    "proposals": [
+                        {
+                            "action_id": "a1",
+                            "proposed_text": "Again, red is warmer and blue is lighter.",
+                            "decision": "approve",
+                            "executed": True,
+                            "message": None,
+                        }
+                    ],
+                    "seller_executed_text": "Again, red is warmer and blue is lighter.",
+                },
+            ],
+            "final_info": {},
+        }
+    }
+
+    case = _first_replay_case(
+        artifact,
+        case_id="time_waster_005",
+        split="validation",
+        should_intervene=True,
+        preferred_step_ids=(1,),
+    )
+
+    assert case.context.step_id == 1
+    assert case.action.visible_text.startswith("Again")
+    assert [item["role"] for item in case.context.dialogue] == [
+        "buyer",
+        "seller",
+        "buyer",
+    ]
+
+
 def test_semantic_gate_repairs_ungrounded_evidence() -> None:
     generator = ScriptedGenerator(
         json.dumps(
@@ -218,6 +294,60 @@ def test_semantic_gate_repairs_ungrounded_evidence() -> None:
     assert len(checks) == 1
     assert checks[0].recommended_decision.value == "block"
     assert len(generator.records) == 2
+
+
+def test_one_constraint_carries_revision_guidance() -> None:
+    generator = ScriptedGenerator(
+        json.dumps(
+            {
+                "activations": [
+                    {
+                        "constraint_id": "payment_rule",
+                        "activated": True,
+                        "evidence": "pay by bank transfer",
+                        "reason": "The proposal is unsafe.",
+                    }
+                ]
+            }
+        )
+    )
+    constraint = SoftConstraint(
+        constraint_id="payment_rule",
+        action_types=("commerce.respond",),
+        tactic_type="off-platform payment",
+        trigger_pattern="accept direct bank transfer",
+        keywords=("bank transfer",),
+        instruction="Keep payment on the platform.",
+        response=ConstraintResponse.REVISE,
+        status=ConstraintStatus.APPROVED,
+        metadata={
+            "scope": "general",
+            "revision_guidance": "Reject the transfer and redirect to platform checkout.",
+        },
+    )
+
+    checks = PromptedSemanticConstraintEvaluator(generator).evaluate(
+        ProposedAction(
+            action_id="action-1",
+            actor_id="seller",
+            action_type="commerce.respond",
+            visible_text="You can pay by bank transfer.",
+        ),
+        ObservableContext(episode_id="episode-1", step_id=0, actor_id="seller"),
+        (RetrievedConstraint(constraint=constraint, score=4.0, rank=1),),
+    )
+
+    assert checks[0].recommended_decision.value == "revise"
+    assert checks[0].reason == constraint.revision_guidance
+    assert constraint.scope is ConstraintScope.GENERAL
+
+
+def test_legacy_constraint_defaults_do_not_rewrite_metadata() -> None:
+    constraint = _constraint(status=ConstraintStatus.APPROVED)
+
+    assert constraint.scope is ConstraintScope.TASK_SPECIFIC
+    assert constraint.revision_guidance is None
+    assert dict(constraint.metadata) == {}
 
 
 def test_diagnoser_accepts_one_string_as_one_visible_excerpt() -> None:

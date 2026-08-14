@@ -32,7 +32,25 @@ The runtime never calls a host tool. Adapters must exclude oracle labels,
 future outcomes, hidden benchmark answers, and reward signals from online
 context.
 
-## Frozen experience library
+## Adaptive Constraint Bank
+
+Level 2 has one experience representation, not separate detection and repair
+skill types. Each approved `SoftConstraint` is a defensive skill with:
+
+- `trigger_pattern` as its `when_to_apply` condition;
+- `instruction` as its reusable defensive principle;
+- `response` as its control action;
+- optional `metadata.revision_guidance` when that action is `REVISE`;
+- `metadata.scope` (`general` or `task_specific`) for analysis and optional
+  hierarchical retrieval.
+
+Hard validators remain code and never enter the bank. A learned constraint may
+both detect a prohibited proposal and tell the host how to revise it, so a
+second Repair SkillBank is unnecessary. `FrozenConstraintLibrary` remains the
+backward-compatible implementation name; `FrozenConstraintBank` is its
+research-facing alias.
+
+## Frozen experience versions
 
 Learning is asynchronous and split-safe:
 
@@ -41,7 +59,7 @@ derivation failure -> diagnosis -> candidate -> held-out replay
                    -> promotion -> new immutable library version
 ```
 
-An active library is frozen for an evaluation run. Failed evaluation episodes
+An active bank is frozen for an evaluation run. Failed evaluation episodes
 never feed back into that run. Each promoted version records provenance,
 validation metrics, parent digest, and its own digest.
 
