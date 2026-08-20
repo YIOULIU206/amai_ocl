@@ -1,8 +1,8 @@
 # CoffeeBench OCL Adapter
 
-`coffeebench_ocl` is an adapter layer for testing AiMai's organization control
-layer on the official CoffeeBench benchmark. It is not a CoffeeBench fork and
-does not reimplement the benchmark.
+`coffeebench_ocl` is the CoffeeBench host adapter for the shared
+[`aocl_core`](../aocl_core/README.md). It is not a CoffeeBench fork and does not
+reimplement the benchmark or the adaptive core.
 
 CoffeeBench stays an external dependency owned by its upstream repository. This
 package attaches to the focal agent's CoffeeBench `BusinessApp` tool boundary;
@@ -74,16 +74,25 @@ backwards compatibility. They are not the experiment taxonomy.
 
 ## Run
 
+Install the shared core and adapter together:
+
+```bash
+python -m pip install -e integrations/aocl_core \
+  -e integrations/coffeebench_ocl
+```
+
 Check that CoffeeBench is importable and exposes the expected focal tools:
 
 ```bash
-PYTHONPATH=integrations/coffeebench_ocl/src python -m coffeebench_ocl.phase0_probe
+PYTHONPATH=integrations/aocl_core/src:integrations/coffeebench_ocl/src \
+  python -m coffeebench_ocl.phase0_probe
 ```
 
 Smoke run with no paid model calls:
 
 ```bash
-PYTHONPATH=integrations/coffeebench_ocl/src python -m coffeebench_ocl.phase1 \
+PYTHONPATH=integrations/aocl_core/src:integrations/coffeebench_ocl/src \
+  python -m coffeebench_ocl.phase1 \
   --arm B3 \
   --model passive \
   --models roaster_A:heuristic_roaster \
@@ -95,10 +104,28 @@ The runner suppresses CoffeeBench's verbose native stdout by default and prints
 a compact JSON summary. Add `--verbose` when debugging upstream CoffeeBench
 events or provider calls.
 
+Enable the shared frozen-library core with an approved JSONL checkpoint:
+
+```bash
+PYTHONPATH=integrations/aocl_core/src:integrations/coffeebench_ocl/src \
+  python -m coffeebench_ocl.phase1 \
+  --arm B4 \
+  --models roaster_A:qwen-plus \
+  --constraint-library libraries/coffeebench/L001/constraints.jsonl \
+  --aocl-mode blocking \
+  --retrieval-top-k 3 \
+  --max-days 3
+```
+
+The CLI currently uses deterministic lexical retrieval and activation. An
+LLM-backed semantic evaluator can be injected through `IntegrationOCLRuntime`
+without changing the CoffeeBench adapter.
+
 DashScope/Qwen smoke run, using a China-region OpenAI-compatible endpoint:
 
 ```bash
-PYTHONPATH=integrations/coffeebench_ocl/src python -m coffeebench_ocl.phase1 \
+PYTHONPATH=integrations/aocl_core/src:integrations/coffeebench_ocl/src \
+  python -m coffeebench_ocl.phase1 \
   --arm B3 \
   --model passive \
   --models roaster_A:qwen-plus \
@@ -133,6 +160,8 @@ Outputs:
   experiment design and integration protocol
 - [`src/coffeebench_ocl/runtime.py`](src/coffeebench_ocl/runtime.py)
   runtime attachment for B0-B5 capability arms
+- [`src/coffeebench_ocl/aocl_adapter.py`](src/coffeebench_ocl/aocl_adapter.py)
+  native tool/check/outcome mapping to the shared A-OCL contracts
 - [`src/coffeebench_ocl/validation.py`](src/coffeebench_ocl/validation.py)
   organizational feasibility checks
 - [`src/coffeebench_ocl/audit.py`](src/coffeebench_ocl/audit.py)
@@ -151,5 +180,6 @@ Outputs:
 From the repository root:
 
 ```bash
-PYTHONPATH=integrations/coffeebench_ocl/src pytest -q integrations/coffeebench_ocl/tests
+PYTHONPATH=integrations/aocl_core/src:integrations/coffeebench_ocl/src \
+  pytest -q integrations/coffeebench_ocl/tests
 ```

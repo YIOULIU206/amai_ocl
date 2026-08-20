@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agenticpay-ocl-v2"
+version = "0.1.0"
+description = "AgenticPay host adapter for the environment-independent A-OCL core"
+requires-python = ">=3.10"
+dependencies = ["aocl-core>=0.1.0"]
+
+[project.scripts]
+agenticpay-ocl-v2-demo = "agenticpay_ocl_v2.demo:main"
+agenticpay-ocl-v2-adaptive-demo = "agenticpay_ocl_v2.adaptive_demo:main"
+agenticpay-ocl-v2-batch-experiment = "agenticpay_ocl_v2.batch_experiment:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

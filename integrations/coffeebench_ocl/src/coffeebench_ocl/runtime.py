@@ -10,6 +10,9 @@ from types import MethodType
 from typing import Any, Callable
 from uuid import uuid4
 
+from aocl_core.runtime import IntegrationOCLRuntime
+
+from .aocl_adapter import CoffeeBenchActionDisposition, CoffeeBenchCoreAdapter
 from .audit import PassiveOCLAuditLogger
 from .contracts import ContractAuditEvent, ContractStatus, OCLContract
 from .json_utils import jsonable
@@ -32,6 +35,8 @@ def attach_ocl_runtime(
     expose_ledger_tools: bool = False,
     expose_contract_tools: bool = False,
     hide_raw_trade_tools: bool = False,
+    adaptive_runtime: IntegrationOCLRuntime | None = None,
+    episode_id: str | None = None,
 ) -> "CoffeeBenchOCLRuntime":
     runtime = CoffeeBenchOCLRuntime(
         env=env,
@@ -41,6 +46,8 @@ def attach_ocl_runtime(
         expose_ledger_tools=expose_ledger_tools,
         expose_contract_tools=expose_contract_tools,
         hide_raw_trade_tools=hide_raw_trade_tools,
+        adaptive_runtime=adaptive_runtime,
+        episode_id=episode_id,
     )
     runtime.attach()
     return runtime
@@ -59,6 +66,8 @@ class CoffeeBenchOCLRuntime:
         expose_ledger_tools: bool,
         expose_contract_tools: bool,
         hide_raw_trade_tools: bool,
+        adaptive_runtime: IntegrationOCLRuntime | None = None,
+        episode_id: str | None = None,
     ) -> None:
         self.env = env
         self.focal_agent_id = focal_agent_id
@@ -66,10 +75,20 @@ class CoffeeBenchOCLRuntime:
         self.expose_ledger_tools = expose_ledger_tools
         self.expose_contract_tools = expose_contract_tools
         self.hide_raw_trade_tools = hide_raw_trade_tools
+        self.episode_id = episode_id or f"coffeebench-{uuid4().hex[:12]}"
         self.logger = PassiveOCLAuditLogger(events_path=events_path, focal_agent_id=focal_agent_id)
         self.business_app = env.business_apps[focal_agent_id]
         self.agent = env.agents[focal_agent_id]
         self.original_tools: dict[str, Callable[..., dict]] = {}
+        self.core_adapter = (
+            CoffeeBenchCoreAdapter(
+                runtime=adaptive_runtime,
+                episode_id=self.episode_id,
+                focal_agent_id=focal_agent_id,
+            )
+            if adaptive_runtime is not None
+            else None
+        )
 
     def attach(self) -> None:
         self._attach_emit_hook()
@@ -100,6 +119,8 @@ class CoffeeBenchOCLRuntime:
             ledger_tools=OCL_LEDGER_TOOLS if self.expose_ledger_tools else (),
             contract_tools=OCL_CONTRACT_TOOLS if self.expose_contract_tools else (),
             hidden_tools=RAW_TRADE_TOOLS if self.hide_raw_trade_tools else (),
+            adaptive_core_enabled=self.core_adapter is not None,
+            episode_id=self.episode_id,
         )
 
     def close(self) -> None:
@@ -326,11 +347,36 @@ class CoffeeBenchOCLRuntime:
                 action_input=action_input,
                 validation=validation,
             )
-        if self.validation_policy.blocks and validation.status.value == "fail":
+        core_disposition: CoffeeBenchActionDisposition | None = None
+        if self.core_adapter is not None:
+            core_disposition = self.core_adapter.evaluate_tool(
+                day=int(context["day"]),
+                action_name=action_name,
+                action_input=action_input,
+                visible_state=_core_visible_state(self.business_app, context),
+                validation=validation,
+            )
+            self.logger.emit(
+                "aocl_core_decision",
+                agent_id=self.focal_agent_id,
+                action=action_name,
+                action_id=core_disposition.action_id,
+                decision=core_disposition.decision.decision.value,
+                message=core_disposition.decision.message,
+                metadata=dict(core_disposition.decision.metadata),
+            )
+        legacy_block = self.validation_policy.blocks and validation.status.value == "fail"
+        adaptive_block = core_disposition is not None and not core_disposition.execute
+        if legacy_block or adaptive_block:
+            decision_value = (
+                core_disposition.decision.decision.value
+                if adaptive_block and core_disposition is not None
+                else "block"
+            )
             blocked = {
                 "status": "error",
-                "message": "Blocked by OCL validation before CoffeeBench execution.",
-                "ocl_decision": "block",
+                "message": "Stopped by A-OCL before CoffeeBench execution.",
+                "ocl_decision": decision_value,
                 "ocl_validation": jsonable(validation),
             }
             self.logger.record_tool_call(
@@ -339,6 +385,13 @@ class CoffeeBenchOCLRuntime:
                 result=blocked,
                 context=context,
             )
+            if core_disposition is not None:
+                self.core_adapter.observe(
+                    core_disposition,
+                    executed=False,
+                    status=decision_value,
+                    visible_result=blocked,
+                )
             return blocked
         try:
             result = original_tool(**action_input)
@@ -349,6 +402,13 @@ class CoffeeBenchOCLRuntime:
                 exception=exc,
                 context=context,
             )
+            if core_disposition is not None:
+                self.core_adapter.observe(
+                    core_disposition,
+                    executed=True,
+                    status="host_exception",
+                    visible_result={"exception_type": type(exc).__name__},
+                )
             raise
         self.logger.record_tool_call(
             action_name=action_name,
@@ -359,10 +419,24 @@ class CoffeeBenchOCLRuntime:
         if self.validation_policy.validates and isinstance(result, dict):
             result = dict(result)
             result["ocl_validation"] = jsonable(validation)
+        if core_disposition is not None:
+            self.core_adapter.observe(
+                core_disposition,
+                executed=True,
+                status=str(result.get("status", "executed")),
+                visible_result=result,
+            )
+            if isinstance(result, dict):
+                result = dict(result)
+                result["aocl_decision"] = core_disposition.decision.decision.value
         return result
 
     def _validate(self, action_name: str, action_input: dict[str, Any]):
-        if not self.validation_policy.validates and action_name != "make_offer":
+        if (
+            not self.validation_policy.validates
+            and self.core_adapter is None
+            and action_name != "make_offer"
+        ):
             from .contracts import ValidationResult, ValidationStatus
 
             return ValidationResult(status=ValidationStatus.NOT_RUN)
@@ -422,6 +496,22 @@ def _snapshot_context(business_app: Any, action_name: str, action_input: dict[st
         context["invoice"] = _dataclass_dict(invoice)
         context["deal"] = _dataclass_dict(_find_by_id(marketplace.deals, getattr(invoice, "reference", "")))
     return jsonable(context)
+
+
+def _core_visible_state(business_app: Any, action_context: dict[str, Any]) -> dict[str, Any]:
+    """Expose focal organization state available at the native tool boundary."""
+
+    return jsonable(
+        {
+            "day": business_app._today(),
+            "cash": round(float(business_app.cash), 2),
+            "inventory": dict(business_app.inventory),
+            "inventory_kg": business_app._total_inventory_kg(),
+            "pending_inbound_kg": business_app._pending_inbound_kg(),
+            "inventory_cap_kg": business_app._inventory_cap_kg(),
+            "action_context": action_context,
+        }
+    )
 
 
 def _call_input_from_bound_method(tool: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:

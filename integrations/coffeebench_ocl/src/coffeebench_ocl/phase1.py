@@ -15,6 +15,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from aocl_core import (
+    ControlMode,
+    DeterministicLexicalRetriever,
+    FrozenConstraintLibrary,
+    IntegrationOCLRuntime,
+    LexicalConstraintEvaluator,
+)
+
+from .audit import PassiveOCLAuditLogger
 from .json_utils import jsonable
 from .phases import OCL_CAPABILITY_ARMS, resolve_capability_arm
 from .qwen_model import install_qwen_provider
@@ -67,6 +76,9 @@ def run_coffeebench_ocl(args: argparse.Namespace) -> dict[str, Any]:
     ocl_events_path = output_dir / "run.ocl.jsonl"
 
     arm = resolve_capability_arm(args.arm)
+    adaptive_runtime = _build_adaptive_runtime(args)
+    if arm.name == "B0" and adaptive_runtime is not None:
+        raise ValueError("B0 is an uncontrolled baseline and cannot attach an A-OCL library")
     with _maybe_quiet(args.quiet) as captured:
         try:
             coffee_args = build_coffeebench_args(args, str(trajectory_path))
@@ -81,6 +93,8 @@ def run_coffeebench_ocl(args: argparse.Namespace) -> dict[str, Any]:
                     expose_ledger_tools=arm.exposes_ledger_tools,
                     expose_contract_tools=arm.exposes_contract_tools,
                     hide_raw_trade_tools=arm.hides_raw_trade_tools,
+                    adaptive_runtime=adaptive_runtime,
+                    episode_id=f"coffeebench-{args.seed}-{arm.name}",
                 )
 
             try:
@@ -104,6 +118,16 @@ def run_coffeebench_ocl(args: argparse.Namespace) -> dict[str, Any]:
         "trajectory_path": output_path,
         "coffee_events_path": coffee_events_path,
         "ocl": ocl_outputs,
+        "aocl_core": {
+            "enabled": adaptive_runtime is not None,
+            "mode": adaptive_runtime.mode.value if adaptive_runtime is not None else None,
+            "library_digest": (
+                adaptive_runtime.constraint_library.digest
+                if adaptive_runtime is not None
+                and adaptive_runtime.constraint_library is not None
+                else None
+            ),
+        },
         "result": result,
     }
     report_json = json.dumps(jsonable(report), indent=2, sort_keys=True)
@@ -162,6 +186,7 @@ def report_brief(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "arm": report.get("arm"),
         "label": report.get("label"),
+        "aocl_core": report.get("aocl_core"),
         "main_agent": main_agent,
         "actual_final_day": result.get("actual_final_day"),
         "terminated_early": result.get("terminated_early"),
@@ -190,6 +215,21 @@ def run_phase1(args: argparse.Namespace) -> dict[str, Any]:
     return run_coffeebench_ocl(args)
 
 
+def _build_adaptive_runtime(args: argparse.Namespace) -> IntegrationOCLRuntime | None:
+    library_path = getattr(args, "constraint_library", None)
+    if not library_path:
+        return None
+    library = FrozenConstraintLibrary.from_jsonl(library_path)
+    return IntegrationOCLRuntime(
+        mode=ControlMode(getattr(args, "aocl_mode", ControlMode.BLOCKING.value)),
+        constraint_library=library,
+        retriever=DeterministicLexicalRetriever(
+            top_k=int(getattr(args, "retrieval_top_k", 3))
+        ),
+        constraint_evaluator=LexicalConstraintEvaluator(),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run CoffeeBench with an OCL capability arm.")
     parser.add_argument(
@@ -210,6 +250,17 @@ def main() -> None:
     parser.add_argument("--main-agent", default=FOCAL_AGENT_ID)
     parser.add_argument("--focal-agent-id", default=FOCAL_AGENT_ID)
     parser.add_argument("--output-dir", default="outputs/coffeebench_ocl/phase1_smoke")
+    parser.add_argument(
+        "--constraint-library",
+        default=None,
+        help="Approved A-OCL JSONL library; enables the shared adaptive core.",
+    )
+    parser.add_argument(
+        "--aocl-mode",
+        default=ControlMode.BLOCKING.value,
+        choices=[mode.value for mode in ControlMode],
+    )
+    parser.add_argument("--retrieval-top-k", type=int, default=3)
     parser.add_argument(
         "--verbose",
         action="store_false",

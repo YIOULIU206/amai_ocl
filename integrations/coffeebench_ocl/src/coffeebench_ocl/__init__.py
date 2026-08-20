@@ -14,6 +14,7 @@ from .contracts import (
     ValidationStatus,
 )
 from .audit import AuditPaths, PassiveOCLAuditLogger
+from .aocl_adapter import CoffeeBenchActionDisposition, CoffeeBenchCoreAdapter
 from .lifecycle import ContractLifecycle
 from .phases import (
     OCL_CAPABILITY_ARMS,
@@ -30,6 +31,8 @@ from .validation import ValidationMode, ValidationPolicy, validate_operational_a
 
 __all__ = [
     "AuditPaths",
+    "CoffeeBenchActionDisposition",
+    "CoffeeBenchCoreAdapter",
     "CoffeeBenchOCLRuntime",
     "ContractLifecycle",
     "ContractAuditEvent",
