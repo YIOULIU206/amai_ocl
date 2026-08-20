@@ -11,7 +11,7 @@ import tempfile
 from typing import Any, Mapping
 
 from .json_utils import jsonable
-from .learning import PromotionPolicy, PromotionResult
+from .learning import PairedRolloutPromotionPolicy, PromotionPolicy, PromotionResult
 from .library import ConstraintStatus, FrozenConstraintLibrary, LibraryError
 
 
@@ -53,7 +53,7 @@ class VersionedLibraryStore:
         *,
         parent: LibraryVersion,
         result: PromotionResult,
-        policy: PromotionPolicy,
+        policy: PromotionPolicy | PairedRolloutPromotionPolicy,
         version_id: str,
     ) -> LibraryVersion:
         if not result.approved or result.constraint.status is not ConstraintStatus.APPROVED:

@@ -24,5 +24,8 @@ Only approved entries from an immutable Adaptive Constraint Bank participate
 online. The backward-compatible Python names are `FrozenConstraintLibrary` and
 its alias `FrozenConstraintBank`. One learned constraint carries its trigger,
 defensive principle, control response, and optional revision guidance; there is
-no separate repair-skill type. Candidate generation, replay validation, and
-promotion remain offline, and evaluation runs never mutate the active bank.
+no separate repair-skill type. Candidate generation and promotion remain
+offline. The core supports both proposal-level replay checks and conservative
+paired-rollout reports supplied by a host adapter; AgenticPay V2 uses complete
+fresh episodes for formal promotion. Evaluation runs never mutate the active
+bank.

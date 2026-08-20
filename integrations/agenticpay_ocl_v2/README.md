@@ -5,6 +5,9 @@ Thin AgenticPay attachment for the environment-independent
 environment; the adapter asks A-OCL for a decision before a seller proposal is
 passed to `env.step()`.
 
+For a Chinese overview of the Constraint Bank's role, online decision path,
+and offline update protocol, see [`CONSTRAINT_BANK_ZH.md`](CONSTRAINT_BANK_ZH.md).
+
 ## Install
 
 Install the shared core and this adapter together:
@@ -42,8 +45,9 @@ and exact text reaching AgenticPay.
 This command starts with an empty `L000`, runs a real failing derivation
 episode, obtains a blinded LLM semantic label with deterministic execution
 aggregation, asks a separate Meta-Agent call to diagnose a candidate constraint,
-validates it on one held-out attack and one benign episode, promotes it to
-immutable `L001`, and compares `L000` with `L001` on a held-out profile:
+runs complete Parent and Parent + Candidate episodes on one held-out attack and
+one benign profile, promotes it under a fixed outcome rule to immutable `L001`,
+and compares `L000` with `L001` on a held-out profile:
 
 ```bash
 export OPENAI_API_KEY=...
@@ -76,11 +80,20 @@ benign profiles:
 agenticpay-ocl-v2-batch-experiment --model gpt-4o-mini
 ```
 
+All hard-OCL conditions use the same versioned AgenticPay Hard Constraint
+suite: seller boundary, strict positive `SELLER_PRICE` format, seller floor,
+and explicit credential-value detection. Keyword-only privacy semantics remain
+in the Constraint Bank path. Runs created before the current suite version must
+be restarted instead of resumed.
+
 The default experiment uses, per tactic, 4 derivation, 2 attack-validation, and
 4 attack-evaluation profiles, plus 2 benign-validation and 4 separate
 benign-evaluation profiles shared across tactic-specific validation. It uses
 four-round episodes so temporal time-wasting behavior is observable and allows
 one bounded revision attempt when a constraint carries corrective guidance.
+Every candidate triggers fresh Parent and Trial conversations; old proposals are
+not used as the promotion result. The default run also produces the four-arm
+ablation. Use `--skip-ablation` only for a cheaper development run.
 For a cheaper end-to-end smoke run:
 
 ```bash
@@ -105,7 +118,7 @@ plottable `growth_curve.csv`. Use
 
 The protocol suite does not call an external model. It checks split isolation,
 semantic-judge execution aggregation, evidence repair, identifier collisions,
-and resume integrity:
+paired-rollout promotion, blinded Judge inputs, and resume integrity:
 
 ```bash
 PYTHONPATH=integrations/aocl_core/src:integrations/agenticpay_ocl_v2/src \

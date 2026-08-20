@@ -61,32 +61,46 @@ def learning_trace_from_run(
 
 
 def judge_view_from_run(result: AgenticPayRunResult) -> dict[str, object]:
-    """Return a transcript view with no arm, decision, constraint, or library data."""
+    """Return only pre-proposal visible context and proposal text for judging."""
 
     steps: list[dict[str, object]] = []
+    visible_dialogue: list[dict[str, object]] = []
     for turn in result.turns:
+        current_dialogue = list(visible_dialogue)
+        if turn.buyer_visible_text:
+            current_dialogue.append(
+                {
+                    "role": "buyer",
+                    "content": turn.buyer_visible_text,
+                    "round": turn.round_id,
+                }
+            )
         for proposal in turn.proposals:
             steps.append(
                 {
                     "step_id": len(steps),
                     "round_id": turn.round_id,
-                    "buyer_text": turn.buyer_visible_text,
+                    "visible_dialogue": current_dialogue,
                     "seller_proposed_text": proposal.proposed_text,
-                    "seller_executed_text": (
-                        turn.seller_executed_text if proposal.executed else None
-                    ),
-                    "executed": proposal.executed,
                 }
             )
-    return {
-        "episode_id": result.episode_id,
-        "steps": steps,
-        "visible_outcome": {
-            key: result.final_info.get(key)
-            for key in ("status", "round", "seller_reward", "buyer_reward")
-            if key in result.final_info
-        },
-    }
+        if turn.buyer_visible_text:
+            visible_dialogue.append(
+                {
+                    "role": "buyer",
+                    "content": turn.buyer_visible_text,
+                    "round": turn.round_id,
+                }
+            )
+        if turn.seller_executed_text:
+            visible_dialogue.append(
+                {
+                    "role": "seller",
+                    "content": turn.seller_executed_text,
+                    "round": turn.round_id,
+                }
+            )
+    return {"steps": steps}
 
 
 def append_learning_trace(path: str | Path, trace: LearningTrace) -> None:

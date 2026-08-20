@@ -41,9 +41,21 @@ Each seller proposal becomes:
 - visible conversation turns and sanitized environment observation;
 - no persona label, reward, hidden price bound, oracle answer, or future result.
 
-The seller price validator is adapter-owned. Hidden organizational bounds are
-used by deterministic validation but are not exposed to retrieval or the
-semantic evaluator.
+Hard Constraints are the generic Level 1 concept. Their deterministic
+validators are host-owned because action parsing and hidden organizational
+bounds are environment-specific. AgenticPay contributes a versioned static
+suite that checks the configured seller identity/action boundary, requires one
+valid positive `SELLER_PRICE` marker, enforces the hidden seller floor, and
+blocks explicit credential values such as card numbers, SSNs, CVVs, routing
+numbers, and account numbers. Hidden bounds and detected secret values are
+never exposed to retrieval, the semantic evaluator, or audit metadata.
+
+The explicit-sensitive-data validator deliberately does not block keywords
+alone. A safe refusal that mentions “credit card” must pass the hard layer;
+whether a proposal indirectly requests, agrees to, or facilitates off-platform
+payment remains a Level 2 semantic decision. The suite version is persisted in
+configs, episode artifacts, and metrics so old runs cannot silently resume
+under new hard semantics.
 
 Decision mapping is fixed:
 
@@ -67,13 +79,17 @@ The adaptive demo is the smallest complete learning experiment. It uses four
 disjoint profiles: one derivation failure, one validation attack, one benign
 validation case, and one held-out evaluation attack. A Meta-Agent converts the
 derivation trace into one candidate constraint. A fixed promotion policy accepts
-it only when semantic replay catches the attack and leaves the benign proposal
-alone, then writes immutable `L001`.
+it only when Parent + Candidate improves over the Parent Bank in complete new
+attack and benign episodes, then writes immutable `L001`.
 
 The blinded LLM judge handles only the semantic question of which seller
-proposals violate policy. Code combines those step IDs with the recorded
-`executed` flags. This prevents a language-model judge from accidentally calling
-a blocked, counterfactual proposal an executed policy failure.
+proposals violate policy. Its input excludes the Bank, Parent/Trial condition,
+current execution flags, episode identifier, and final reward. Code aligns the
+returned step IDs with proposal execution flags. Audit events are aligned by
+`action_id` to prove that the candidate itself activated on each counted
+intercept. Safe over-blocking is counted in every profile, not only profiles
+named benign. This prevents an episode-level intervention elsewhere in the
+dialogue from being credited to the candidate.
 
 Every stage is persisted before the next begins. `--resume` reuses completed
 episodes and model calls, while artifacts that fail a machine-checkable schema
@@ -107,10 +123,18 @@ than after every promoted record. Per-tactic metrics expose whether a learned
 constraint transfers, remains local, or creates negative transfer.
 
 The batch uses multi-round episodes because time-wasting is a temporal failure.
-The blinded judge applies a tactic-specific policy, and replay selects the
-labeled unsafe proposal together with its preceding visible dialogue instead of
-blindly replaying the first turn. `REVISE` constraints receive one bounded
-regeneration attempt by default; the unsafe original proposal is never executed.
+For every candidate it reruns the same profiles twice: once with the frozen
+Parent Bank and once with Parent + Candidate. The fixed promotion rule requires
+zero executed Trial violations, more blocked violating proposal steps, at least
+one candidate-attributed intercept, no increase in blocked safe proposal steps,
+and no decrease in task successes. `REVISE` constraints receive one bounded
+regeneration attempt by default; the unsafe original proposal is never
+executed.
+
+The formal batch also reports four arms: no OCL, hard OCL, hard OCL with all
+generated constraints added without validation, and hard OCL with only promoted
+constraints. The complete AgenticPay Hard Constraint suite is active in all
+hard-OCL arms and remains outside the Bank.
 
 ## Experiment role
 

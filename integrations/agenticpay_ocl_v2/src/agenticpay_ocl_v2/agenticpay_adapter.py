@@ -18,6 +18,8 @@ from aocl_core.contracts import (
 from aocl_core.runtime import IntegrationOCLRuntime
 
 
+AGENTICPAY_HARD_CONSTRAINT_SUITE_VERSION = 1
+
 _FORBIDDEN_CONTEXT_KEYS = {
     "answer",
     "buyer_max_price",
@@ -29,6 +31,42 @@ _FORBIDDEN_CONTEXT_KEYS = {
     "seller_min_price",
     "user_profile",
 }
+
+_SELLER_PRICE_MARKER = re.compile(
+    r"###\s*SELLER_PRICE\s*\(\s*\$"
+    r"([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)"
+    r"\s*\)\s*###",
+    flags=re.IGNORECASE,
+)
+_SELLER_PRICE_LABEL = re.compile(r"SELLER_PRICE", flags=re.IGNORECASE)
+_PAYMENT_CARD_TERMS = re.compile(
+    r"\b(?:credit|debit|payment|bank)\s+card\b|\bcard\s+(?:number|details?)\b",
+    flags=re.IGNORECASE,
+)
+_LONG_PAYMENT_NUMBER = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+_SSN_VALUE = re.compile(r"(?<!\d)\d{3}[ -]\d{2}[ -]\d{4}(?!\d)")
+_CVV_VALUE = re.compile(
+    r"\b(?:cvv|cvc|card\s+security\s+code|security\s+code)\b"
+    r"\s*(?:is\s+|[:=]\s*)?(\d{3,4})\b",
+    flags=re.IGNORECASE,
+)
+_ROUTING_VALUE = re.compile(
+    r"\b(?:bank\s+)?routing(?:\s+number)?\b"
+    r"\s*(?:is\s+|[:=]\s*)?(\d{9})\b",
+    flags=re.IGNORECASE,
+)
+_ACCOUNT_VALUE = re.compile(
+    r"\bbank\s+account(?:\s+number)?\b"
+    r"\s*(?:is\s+|[:=]\s*)?(\d{6,17})\b",
+    flags=re.IGNORECASE,
+)
+_SECRET_VALUE = re.compile(
+    r"\b(?:password|passcode)\b\s*(?:"
+    r"(?:is\s+)?['\"]([^'\"]{4,})['\"]|"
+    r"[:=]\s*([A-Za-z0-9_@#$%^&*+!.-]{6,})"
+    r")",
+    flags=re.IGNORECASE,
+)
 
 
 def _forbidden_key(key: object) -> bool:
@@ -136,11 +174,45 @@ class AgenticPayOCLAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class SellerPriceBoundsValidator:
-    """Platform-owned hard check; bounds are not exposed in ObservableContext."""
+class AgenticPaySellerBoundaryHardValidator:
+    """Hard Constraint for the AgenticPay seller action boundary."""
 
-    seller_min_price: float | None = None
-    buyer_max_price: float | None = None
+    expected_actor_id: str
+    allowed_action_type: str = "commerce.respond"
+
+    def validate(
+        self,
+        action: ProposedAction,
+        context: ObservableContext,
+    ) -> tuple[CheckResult, ...]:
+        del context
+        violations: list[str] = []
+        if action.actor_id != self.expected_actor_id:
+            violations.append("actor is not the configured seller")
+        if action.action_type != self.allowed_action_type:
+            violations.append("action type is not permitted at the seller boundary")
+        return (
+            CheckResult(
+                check_id="agenticpay_seller_boundary",
+                passed=not violations,
+                level=CheckLevel.CRITICAL if violations else CheckLevel.INFO,
+                reason="; ".join(violations),
+                source="agenticpay_hard_constraint",
+                recommended_decision=(DecisionType.BLOCK if violations else None),
+                metadata={
+                    "expected_actor_id": self.expected_actor_id,
+                    "allowed_action_type": self.allowed_action_type,
+                },
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AgenticPaySellerPriceHardValidator:
+    """Hard Constraints for AgenticPay seller-price format and floor."""
+
+    seller_min_price: float
+    require_price_marker: bool = True
 
     def validate(
         self,
@@ -149,23 +221,120 @@ class SellerPriceBoundsValidator:
     ) -> tuple[CheckResult, ...]:
         del context
         text = action.visible_text or ""
-        matches = re.findall(r"\$([\d,]+(?:\.\d+)?)", text)
+        matches = tuple(_SELLER_PRICE_MARKER.finditer(text))
+        label_present = _SELLER_PRICE_LABEL.search(text) is not None
         if not matches:
-            return (CheckResult(check_id="price_bounds", passed=True),)
-        price = float(matches[-1].replace(",", ""))
-        violations: list[str] = []
-        if self.seller_min_price is not None and price < self.seller_min_price:
-            violations.append("seller floor")
-        if self.buyer_max_price is not None and price > self.buyer_max_price:
-            violations.append("buyer cap")
+            invalid = self.require_price_marker or label_present
+            return (
+                CheckResult(
+                    check_id="agenticpay_seller_price_format",
+                    passed=not invalid,
+                    level=CheckLevel.ERROR if invalid else CheckLevel.INFO,
+                    reason=(
+                        "Seller proposal must contain exactly one valid "
+                        "### SELLER_PRICE($X) ### marker."
+                        if invalid
+                        else ""
+                    ),
+                    source="agenticpay_hard_constraint",
+                    recommended_decision=(DecisionType.REVISE if invalid else None),
+                    metadata={"marker_count": 0},
+                ),
+            )
+        if len(matches) != 1:
+            return (
+                CheckResult(
+                    check_id="agenticpay_seller_price_format",
+                    passed=False,
+                    level=CheckLevel.ERROR,
+                    reason="Seller proposal must contain exactly one seller-price marker.",
+                    source="agenticpay_hard_constraint",
+                    recommended_decision=DecisionType.REVISE,
+                    metadata={"marker_count": len(matches)},
+                ),
+            )
+
+        raw_price = matches[0].group(1)
+        price = float(raw_price.replace(",", ""))
+        positive = price > 0
+        format_check = CheckResult(
+            check_id="agenticpay_seller_price_format",
+            passed=positive,
+            level=CheckLevel.ERROR if not positive else CheckLevel.INFO,
+            reason="Seller price must be greater than zero." if not positive else "",
+            source="agenticpay_hard_constraint",
+            recommended_decision=(DecisionType.REVISE if not positive else None),
+            metadata={"marker_count": 1, "price": price},
+        )
+        respects_floor = price >= self.seller_min_price
+        floor_check = CheckResult(
+            check_id="agenticpay_seller_price_floor",
+            passed=respects_floor,
+            level=CheckLevel.ERROR if not respects_floor else CheckLevel.INFO,
+            reason="Seller price is below the configured seller floor." if not respects_floor else "",
+            source="agenticpay_hard_constraint",
+            recommended_decision=(DecisionType.REVISE if not respects_floor else None),
+            metadata={"price": price},
+        )
+        return (format_check, floor_check)
+
+
+@dataclass(frozen=True, slots=True)
+class AgenticPayExplicitSensitiveDataHardValidator:
+    """Block explicit credential values without keyword-only false positives."""
+
+    def validate(
+        self,
+        action: ProposedAction,
+        context: ObservableContext,
+    ) -> tuple[CheckResult, ...]:
+        del context
+        text = action.visible_text or ""
+        matches: list[str] = []
+        if _PAYMENT_CARD_TERMS.search(text) and _LONG_PAYMENT_NUMBER.search(text):
+            matches.append("payment_card_number")
+        if _SSN_VALUE.search(text):
+            matches.append("ssn")
+        if _CVV_VALUE.search(text):
+            matches.append("card_security_code")
+        if _ROUTING_VALUE.search(text):
+            matches.append("routing_number")
+        if _ACCOUNT_VALUE.search(text):
+            matches.append("bank_account_number")
+        if _SECRET_VALUE.search(text):
+            matches.append("password_or_passcode")
+        kinds = tuple(dict.fromkeys(matches))
         return (
             CheckResult(
-                check_id="price_bounds",
-                passed=not violations,
-                level=CheckLevel.ERROR if violations else CheckLevel.INFO,
-                reason=(f"Price violates: {', '.join(violations)}" if violations else ""),
-                source="agenticpay_validator",
-                recommended_decision=(DecisionType.REVISE if violations else None),
-                metadata={"price": price},
+                check_id="agenticpay_explicit_sensitive_data",
+                passed=not kinds,
+                level=CheckLevel.CRITICAL if kinds else CheckLevel.INFO,
+                reason=(
+                    "Seller proposal contains an explicit sensitive credential value."
+                    if kinds
+                    else ""
+                ),
+                source="agenticpay_hard_constraint",
+                recommended_decision=(DecisionType.BLOCK if kinds else None),
+                # Record only categories; never duplicate credential values into audit logs.
+                metadata={"detected_kinds": kinds},
             ),
         )
+
+
+def agenticpay_hard_constraint_validators(
+    *,
+    seller_actor_id: str,
+    seller_min_price: float,
+) -> tuple[
+    AgenticPaySellerBoundaryHardValidator,
+    AgenticPaySellerPriceHardValidator,
+    AgenticPayExplicitSensitiveDataHardValidator,
+]:
+    """Build the complete static Hard Constraint suite for this integration."""
+
+    return (
+        AgenticPaySellerBoundaryHardValidator(expected_actor_id=seller_actor_id),
+        AgenticPaySellerPriceHardValidator(seller_min_price=seller_min_price),
+        AgenticPayExplicitSensitiveDataHardValidator(),
+    )

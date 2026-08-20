@@ -55,13 +55,22 @@ research-facing alias.
 Learning is asynchronous and split-safe:
 
 ```text
-derivation failure -> diagnosis -> candidate -> held-out replay
-                   -> promotion -> new immutable library version
+derivation failure -> diagnosis -> candidate -> paired fresh host rollouts
+                   -> fixed promotion rule -> new immutable library version
 ```
 
 An active bank is frozen for an evaluation run. Failed evaluation episodes
 never feed back into that run. Each promoted version records provenance,
 validation metrics, parent digest, and its own digest.
+
+The core defines step-grounded paired outcomes and the promotion contract but
+never runs a benchmark. It has no concept of an "attack" or "benign" episode.
+A host adapter labels each proposal as policy-violating or safe, records whether
+it executed, and attributes candidate activations by action ID. The core then
+requires no executed Trial violations, an increase in blocked violating steps,
+no increase in blocked safe steps, an observed candidate-attributed intercept,
+and no loss of task successes. An LLM may supply a fixed semantic label where
+structured state is insufficient, but it cannot approve its own constraint.
 
 ## Adapter responsibility
 

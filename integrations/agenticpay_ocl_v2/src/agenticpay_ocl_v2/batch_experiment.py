@@ -12,16 +12,22 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from aocl_core.json_utils import jsonable
-from aocl_core.learning import PromotionPolicy, ReplayCase, promote_candidate
+from aocl_core.learning import (
+    PairedRolloutPromotionPolicy,
+    PairedRolloutReport,
+    RolloutCaseResult,
+    promote_candidate_from_rollouts,
+)
 from aocl_core.library import FrozenConstraintLibrary, SoftConstraint
+from aocl_core.policies import ControlMode
 from aocl_core.versioning import LibraryVersion, VersionedLibraryStore
 
 from .adaptive_demo import (
     ModelProvider,
+    _complete_rollout_case,
     _diagnose_candidate,
     _episode_result,
     _episode_summary,
-    _first_replay_case,
     _judge_episode,
     _load_dotenv,
     _load_or_run_episode,
@@ -29,14 +35,15 @@ from .adaptive_demo import (
     POLICY_TEXT,
     _read_json,
     _repo_root,
-    _validate_candidate,
     _write_json,
 )
+from .agenticpay_adapter import AGENTICPAY_HARD_CONSTRAINT_SUITE_VERSION
 from .datasets import Profile, SplitManifest, load_profiles
 from .trace_export import learning_trace_from_run
 
 
-LEARNING_OUTCOME_SCHEMA = 2
+LEARNING_OUTCOME_SCHEMA = 5
+PAIRED_VALIDATION_SCHEMA = 3
 DEFAULT_TACTICS = ("privacy_phisher", "role_hijacker", "time_waster")
 TACTIC_POLICIES = {
     "privacy_phisher": POLICY_TEXT,
@@ -124,7 +131,7 @@ def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
             f"need {benign_needed} benign profiles, found {len(manifest.benign)}"
         )
     return {
-        "schema_version": 2,
+        "schema_version": 4,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model": args.model,
         "api_key_env": args.api_key_env,
@@ -134,6 +141,8 @@ def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
         "buyer_max_price": args.buyer_max_price,
         "seller_min_price": args.seller_min_price,
         "maximum_revision_attempts": args.maximum_revision_attempts,
+        "hard_constraint_suite_version": AGENTICPAY_HARD_CONSTRAINT_SUITE_VERSION,
+        "run_ablations": not args.skip_ablation,
         "tactic_types": tactics,
         "adversarial_profiles": str(adversarial_path),
         "benign_profiles": str(benign_path),
@@ -223,71 +232,168 @@ def _policy_for_profile(
         ) from exc
 
 
-def _validation_cases(
-    run_dir: Path,
+def _rollout_case_from_dict(payload: Mapping[str, Any]) -> RolloutCaseResult:
+    return RolloutCaseResult(
+        case_id=str(payload["case_id"]),
+        proposal_steps=int(payload["proposal_steps"]),
+        policy_violation_steps=int(payload["policy_violation_steps"]),
+        executed_violation_steps=int(payload["executed_violation_steps"]),
+        blocked_violation_steps=int(payload["blocked_violation_steps"]),
+        blocked_safe_steps=int(payload["blocked_safe_steps"]),
+        candidate_intercept_steps=int(payload["candidate_intercept_steps"]),
+        task_success=bool(payload["task_success"]),
+        rounds=int(payload["rounds"]),
+        metadata=dict(payload.get("metadata", {})),
+    )
+
+
+def _paired_report_from_dict(payload: Mapping[str, Any]) -> PairedRolloutReport:
+    return PairedRolloutReport.from_cases(
+        candidate_id=str(payload["candidate_id"]),
+        parent_cases=tuple(
+            _rollout_case_from_dict(item) for item in payload["parent_cases"]
+        ),
+        trial_cases=tuple(
+            _rollout_case_from_dict(item) for item in payload["trial_cases"]
+        ),
+    )
+
+
+def _rollout_case(
+    *,
+    group: str,
+    profile_id: str,
+    artifact: Mapping[str, Any],
+    label: Any,
+    candidate_id: str | None = None,
+) -> RolloutCaseResult:
+    return _complete_rollout_case(
+        group=group,
+        case_id=profile_id,
+        artifact=artifact,
+        label=label,
+        candidate_id=candidate_id,
+    )
+
+
+def _run_validation_condition(
+    condition_dir: Path,
+    *,
+    condition: str,
+    provider: ModelProvider,
+    config: Mapping[str, Any],
+    profiles: Mapping[str, Profile],
+    tactic: str,
+    library: FrozenConstraintLibrary,
+    run_id: str,
+    candidate_id: str | None = None,
+) -> tuple[RolloutCaseResult, ...]:
+    attack_ids = tuple(
+        profile_id
+        for profile_id in config["validation_attack_profile_ids"]
+        if profiles[profile_id].persona_type == tactic
+    )
+    benign_ids = tuple(config["validation_benign_profile_ids"])
+    if not attack_ids or not benign_ids:
+        raise RuntimeError("paired rollout validation requires attack and benign profiles")
+    records: list[RolloutCaseResult] = []
+    for group, profile_ids in (("attack", attack_ids), ("benign", benign_ids)):
+        for profile_id in profile_ids:
+            artifact = _load_or_run_episode(
+                condition_dir / f"{group}_{profile_id}_episode.json",
+                stage=f"paired_validation_{condition}_{profile_id}",
+                provider=provider,
+                config=config,
+                profile=profiles[profile_id],
+                library=library,
+                run_id=run_id,
+            )
+            label = _judge_episode(
+                condition_dir / f"{group}_{profile_id}_label.json",
+                provider=provider,
+                result=_episode_result(artifact),
+                stage=f"paired_validation_{condition}_{profile_id}_label",
+                policy_text=_policy_for_profile(profiles[profile_id], (tactic,)),
+            )
+            records.append(
+                _rollout_case(
+                    group=group,
+                    profile_id=profile_id,
+                    artifact=artifact,
+                    label=label,
+                    candidate_id=candidate_id,
+                )
+            )
+    return tuple(records)
+
+
+def _paired_rollout_validation(
+    validation_dir: Path,
     *,
     provider: ModelProvider,
     config: Mapping[str, Any],
     profiles: Mapping[str, Profile],
-    l000: LibraryVersion,
-) -> Mapping[str, tuple[ReplayCase, ...]]:
-    configured_tactics = _configured_tactics(config, profiles)
-    attack_cases: dict[str, list[ReplayCase]] = {
-        tactic: [] for tactic in configured_tactics
-    }
-    benign_cases: list[ReplayCase] = []
-    validation_root = run_dir / "validation_pool"
-    for group, profile_ids, should_intervene in (
-        ("attack", config["validation_attack_profile_ids"], True),
-        ("benign", config["validation_benign_profile_ids"], False),
-    ):
-        for profile_id in profile_ids:
-            artifact = _load_or_run_episode(
-                validation_root / f"{group}_{profile_id}_episode.json",
-                stage=f"validation_pool_{profile_id}",
-                provider=provider,
-                config=config,
-                profile=profiles[profile_id],
-                library=l000.library,
-                run_id=run_dir.name,
-            )
-            result = _episode_result(artifact)
-            label = _judge_episode(
-                validation_root / f"{group}_{profile_id}_label.json",
-                provider=provider,
-                result=result,
-                stage=f"validation_pool_{profile_id}_label",
-                policy_text=_policy_for_profile(
-                    profiles[profile_id], configured_tactics
-                ),
-            )
-            if should_intervene and not label.policy_failure:
-                print(f"[skip] validation attack did not produce an unsafe action: {profile_id}")
-                continue
-            if not should_intervene and label.policy_failure:
-                raise RuntimeError(f"benign validation profile was unsafe: {profile_id}")
-            case = _first_replay_case(
-                artifact,
-                case_id=profile_id,
-                split="validation" if should_intervene else "benign",
-                should_intervene=should_intervene,
-                preferred_step_ids=(label.evidence_step_ids if should_intervene else ()),
-            )
-            if should_intervene:
-                tactic = profiles[profile_id].persona_type
-                attack_cases.setdefault(tactic, []).append(case)
-            else:
-                benign_cases.append(case)
-    if not benign_cases:
-        raise RuntimeError("validation pool contains no benign proposal")
-    result: dict[str, tuple[ReplayCase, ...]] = {}
-    for tactic, positives in attack_cases.items():
-        if not positives:
-            raise RuntimeError(
-                f"validation pool contains no observed unsafe {tactic} proposal"
-            )
-        result[tactic] = tuple(positives + benign_cases)
-    return result
+    tactic: str,
+    parent: LibraryVersion,
+    candidate: SoftConstraint,
+    run_id: str,
+) -> PairedRolloutReport:
+    trial_constraint = candidate.approved_copy(metadata={"validation_only": True})
+    trial_library = FrozenConstraintLibrary(
+        parent.library.constraints + (trial_constraint,)
+    )
+    report_path = validation_dir / "paired_report.json"
+    if report_path.exists():
+        artifact = _read_json(report_path)
+        if artifact.get("schema_version") != PAIRED_VALIDATION_SCHEMA:
+            raise RuntimeError("paired validation artifact uses an old schema")
+        if artifact.get("candidate_id") != candidate.constraint_id:
+            raise RuntimeError("paired validation belongs to another candidate")
+        if artifact.get("parent_digest") != parent.library.digest:
+            raise RuntimeError("paired validation parent Bank digest changed")
+        if artifact.get("trial_digest") != trial_library.digest:
+            raise RuntimeError("paired validation trial Bank digest changed")
+        print(f"[resume] paired rollout validation: {candidate.constraint_id}")
+        return _paired_report_from_dict(artifact["report"])
+
+    parent_cases = _run_validation_condition(
+        validation_dir / "parent",
+        condition="parent",
+        provider=provider,
+        config=config,
+        profiles=profiles,
+        tactic=tactic,
+        library=parent.library,
+        run_id=run_id,
+    )
+    trial_cases = _run_validation_condition(
+        validation_dir / "trial",
+        condition="trial",
+        provider=provider,
+        config=config,
+        profiles=profiles,
+        tactic=tactic,
+        library=trial_library,
+        run_id=run_id,
+        candidate_id=candidate.constraint_id,
+    )
+    report = PairedRolloutReport.from_cases(
+        candidate_id=candidate.constraint_id,
+        parent_cases=parent_cases,
+        trial_cases=trial_cases,
+    )
+    _write_json(
+        report_path,
+        {
+            "schema_version": PAIRED_VALIDATION_SCHEMA,
+            "candidate_id": candidate.constraint_id,
+            "parent_version": parent.version_id,
+            "parent_digest": parent.library.digest,
+            "trial_digest": trial_library.digest,
+            "report": report,
+        },
+    )
+    return report
 
 
 def _unique_candidate(
@@ -312,10 +418,11 @@ def _learning_step(
     *,
     provider: ModelProvider,
     config: Mapping[str, Any],
+    profiles: Mapping[str, Profile],
+    tactic: str,
     profile: Profile,
     parent: LibraryVersion,
     store: VersionedLibraryStore,
-    validation_cases: tuple[ReplayCase, ...],
     next_version_number: int,
 ) -> dict[str, Any]:
     outcome_path = step_dir / "outcome.json"
@@ -327,7 +434,11 @@ def _learning_step(
         if outcome.get("parent_version") != parent.version_id:
             raise RuntimeError("learning outcome parent version does not match")
         if outcome.get("schema_version") != LEARNING_OUTCOME_SCHEMA:
-            if outcome.get("status") == "covered_without_new_constraint":
+            if outcome.get("status") in {
+                "covered_without_new_constraint",
+                "covered_by_library",
+                "no_observed_failure",
+            }:
                 artifact = _read_json(step_dir / "derivation_episode.json")
                 activations = sum(
                     event.get("event_type") == "constraint_activated"
@@ -335,6 +446,11 @@ def _learning_step(
                 )
                 outcome["status"] = (
                     "covered_by_library" if activations else "no_observed_failure"
+                )
+            else:
+                raise RuntimeError(
+                    "learning outcome predates paired fresh-rollout validation; "
+                    "start a new batch run"
                 )
             outcome["schema_version"] = LEARNING_OUTCOME_SCHEMA
             _write_json(outcome_path, outcome)
@@ -396,20 +512,18 @@ def _learning_step(
     )
     candidate = _unique_candidate(diagnosis.constraint, parent.library, profile.profile_id)
     _write_json(step_dir / "candidate_used.json", candidate)
-    report = _validate_candidate(
-        step_dir / "validation_report.json",
+    report = _paired_rollout_validation(
+        step_dir / "paired_validation",
         provider=provider,
+        config=config,
+        profiles=profiles,
+        tactic=tactic,
+        parent=parent,
         candidate=candidate,
-        cases=validation_cases,
+        run_id=step_dir.parent.parent.name,
     )
-    policy = PromotionPolicy(
-        minimum_positive_cases=1,
-        minimum_negative_cases=1,
-        minimum_recall=1.0,
-        minimum_precision=1.0,
-        maximum_false_positive_rate=0.0,
-    )
-    promotion = promote_candidate(candidate, report, policy)
+    policy = PairedRolloutPromotionPolicy()
+    promotion = promote_candidate_from_rollouts(candidate, report, policy)
     _write_json(step_dir / "promotion.json", promotion)
     if not promotion.approved:
         outcome = {
@@ -419,6 +533,8 @@ def _learning_step(
             "parent_version": parent.version_id,
             "version_id": parent.version_id,
             "reasons": promotion.reasons,
+            "candidate": candidate.to_dict(),
+            "paired_validation": jsonable(report),
         }
         _write_json(outcome_path, outcome)
         return outcome
@@ -442,6 +558,8 @@ def _learning_step(
         "parent_version": parent.version_id,
         "version_id": child.version_id,
         "candidate_id": candidate.constraint_id,
+        "candidate": candidate.to_dict(),
+        "paired_validation": jsonable(report),
         "library_digest": child.library.digest,
     }
     _write_json(outcome_path, outcome)
@@ -459,18 +577,34 @@ def _evaluate_version(
     config: Mapping[str, Any],
     profiles: Mapping[str, Profile],
     version: LibraryVersion,
+    condition_id: str | None = None,
+    control_mode: ControlMode = ControlMode.BLOCKING,
+    use_hard_validator: bool = True,
 ) -> dict[str, Any]:
-    version_dir = run_dir / "evaluations" / version.version_id
+    evaluation_id = condition_id or version.version_id
+    version_dir = run_dir / "evaluations" / evaluation_id
     metrics_path = version_dir / "metrics.json"
     if metrics_path.exists():
-        print(f"[resume] evaluation: {version.version_id}")
+        print(f"[resume] evaluation: {evaluation_id}")
         metrics = _read_json(metrics_path)
         if metrics.get("version_id") != version.version_id:
             raise RuntimeError("evaluation metrics belong to another version")
         if metrics.get("library_digest") != version.library.digest:
             raise RuntimeError("evaluation metrics library digest does not match")
+        if metrics.get("condition_id", version.version_id) != evaluation_id:
+            raise RuntimeError("evaluation metrics belong to another condition")
+        if metrics.get("control_mode", ControlMode.BLOCKING.value) != control_mode.value:
+            raise RuntimeError("evaluation metrics use another control mode")
+        if metrics.get("hard_validator_enabled", True) is not use_hard_validator:
+            raise RuntimeError("evaluation metrics use another hard-validator setting")
+        expected_suite = (
+            AGENTICPAY_HARD_CONSTRAINT_SUITE_VERSION if use_hard_validator else None
+        )
+        if metrics.get("hard_constraint_suite_version") != expected_suite:
+            raise RuntimeError("evaluation metrics use another Hard Constraint suite")
         return metrics
     records: list[dict[str, Any]] = []
+    rollout_cases: list[RolloutCaseResult] = []
     groups = (
         ("attack", config["evaluation_attack_profile_ids"]),
         ("benign", config["evaluation_benign_profile_ids"]),
@@ -479,35 +613,46 @@ def _evaluate_version(
         for profile_id in profile_ids:
             artifact = _load_or_run_episode(
                 version_dir / f"{group}_{profile_id}_episode.json",
-                stage=f"evaluation_{version.version_id}_{profile_id}",
+                stage=f"evaluation_{evaluation_id}_{profile_id}",
                 provider=provider,
                 config=config,
                 profile=profiles[profile_id],
                 library=version.library,
                 run_id=run_dir.name,
+                control_mode=control_mode,
+                use_hard_validator=use_hard_validator,
             )
             result = _episode_result(artifact)
             label = _judge_episode(
                 version_dir / f"{group}_{profile_id}_label.json",
                 provider=provider,
                 result=result,
-                stage=f"evaluation_{version.version_id}_{profile_id}_label",
+                stage=f"evaluation_{evaluation_id}_{profile_id}_label",
                 policy_text=_policy_for_profile(
                     profiles[profile_id], _configured_tactics(config, profiles)
                 ),
             )
+            rollout = _rollout_case(
+                group=group,
+                profile_id=profile_id,
+                artifact=artifact,
+                label=label,
+            )
+            rollout_cases.append(rollout)
             records.append(
                 {
                     "group": group,
                     "profile_id": profile_id,
                     "persona_type": profiles[profile_id].persona_type,
                     **_episode_summary(artifact, label),
+                    "unsafe_proposal": rollout.unsafe_proposal,
+                    "intervened": rollout.intervened,
+                    "attack_intercept": rollout.attack_intercept,
+                    "valid_success": rollout.valid_success,
                 }
             )
     attacks = [item for item in records if item["group"] == "attack"]
     benign = [item for item in records if item["group"] == "benign"]
-    safe_attack = [not item["policy_failure"] for item in attacks]
-    safe_benign = [not item["false_positive_intervention"] for item in benign]
     tactic_metrics = {}
     for tactic in _configured_tactics(config, profiles):
         tactic_records = [item for item in attacks if item["persona_type"] == tactic]
@@ -517,7 +662,7 @@ def _evaluate_version(
                 [item["policy_failure"] for item in tactic_records]
             ),
             "attack_intercept_rate": _mean(
-                [item["constraint_activations"] > 0 for item in tactic_records]
+                [item["attack_intercept"] for item in tactic_records]
             ),
             "task_progress_rate": _mean(
                 [item["task_progress"] for item in tactic_records]
@@ -525,18 +670,26 @@ def _evaluate_version(
         }
     metrics = {
         "version_id": version.version_id,
+        "condition_id": evaluation_id,
+        "control_mode": control_mode.value,
+        "hard_validator_enabled": use_hard_validator,
+        "hard_constraint_suite_version": (
+            AGENTICPAY_HARD_CONSTRAINT_SUITE_VERSION if use_hard_validator else None
+        ),
         "library_size": len(version.library.approved),
         "library_digest": version.library.digest,
         "episodes": len(records),
         "policy_failure_rate": _mean([item["policy_failure"] for item in attacks]),
         "attack_intercept_rate": _mean(
-            [item["constraint_activations"] > 0 for item in attacks]
+            [item["attack_intercept"] for item in attacks]
         ),
         "benign_false_positive_rate": _mean(
             [item["false_positive_intervention"] for item in benign]
         ),
         "task_progress_rate": _mean([item["task_progress"] for item in records]),
-        "valid_success_rate": _mean(safe_attack + safe_benign),
+        "valid_success_rate": _mean(
+            [case.valid_success for case in rollout_cases]
+        ),
         "tactic_metrics": tactic_metrics,
         "records": records,
     }
@@ -564,6 +717,82 @@ def _write_curve(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     os.replace(temporary, path)
 
 
+def _unvalidated_library(outcomes: Sequence[Mapping[str, Any]]) -> FrozenConstraintLibrary:
+    library = FrozenConstraintLibrary()
+    for outcome in outcomes:
+        payload = outcome.get("candidate")
+        if not isinstance(payload, Mapping):
+            continue
+        candidate = SoftConstraint.from_dict(payload)
+        candidate = _unique_candidate(
+            candidate,
+            library,
+            str(outcome.get("profile_id", "candidate")),
+        )
+        library = FrozenConstraintLibrary(
+            library.constraints
+            + (
+                candidate.approved_copy(
+                    metadata={"unvalidated_ablation": True}
+                ),
+            )
+        )
+    return library
+
+
+def _run_ablation(
+    run_dir: Path,
+    *,
+    provider: ModelProvider,
+    config: Mapping[str, Any],
+    profiles: Mapping[str, Profile],
+    l000: LibraryVersion,
+    outcomes: Sequence[Mapping[str, Any]],
+    growth_curve: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    no_ocl = _evaluate_version(
+        run_dir,
+        provider=provider,
+        config=config,
+        profiles=profiles,
+        version=l000,
+        condition_id="ablation_no_ocl",
+        control_mode=ControlMode.DISABLED,
+        use_hard_validator=False,
+    )
+    hard_only = {
+        **dict(growth_curve[0]),
+        "condition_id": "ablation_hard_ocl",
+    }
+    unvalidated = _unvalidated_library(outcomes)
+    unvalidated_version = LibraryVersion(
+        version_id="UNVALIDATED",
+        path=run_dir / "ablations" / "unvalidated",
+        library=unvalidated,
+        manifest={"source": "all generated candidates without promotion"},
+    )
+    hard_unvalidated = _evaluate_version(
+        run_dir,
+        provider=provider,
+        config=config,
+        profiles=profiles,
+        version=unvalidated_version,
+        condition_id="ablation_hard_unvalidated",
+    )
+    hard_validated = {
+        **dict(growth_curve[-1]),
+        "condition_id": "ablation_hard_validated",
+    }
+    report = {
+        "no_ocl": no_ocl,
+        "hard_ocl": hard_only,
+        "hard_unvalidated_bank": hard_unvalidated,
+        "hard_validated_bank": hard_validated,
+    }
+    _write_json(run_dir / "ablation_report.json", report)
+    return report
+
+
 def run_batch_experiment(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
     _load_dotenv()
     if args.resume:
@@ -573,18 +802,20 @@ def run_batch_experiment(args: argparse.Namespace) -> tuple[Path, dict[str, Any]
         run_dir = _new_run_directory(Path(args.output_root).resolve())
         config = _batch_config(args)
         _write_json(run_dir / "config.json", config)
+    if (
+        config.get("hard_constraint_suite_version")
+        != AGENTICPAY_HARD_CONSTRAINT_SUITE_VERSION
+    ):
+        raise ValueError(
+            "run config predates the current AgenticPay Hard Constraint suite; "
+            "start a new run"
+        )
     print(f"Artifacts: {run_dir}")
     provider = ModelProvider(config)
     profiles = _profiles(config)
     store = VersionedLibraryStore(run_dir / "libraries")
     current = _initial_library(store)
-    cases_by_tactic = _validation_cases(
-        run_dir,
-        provider=provider,
-        config=config,
-        profiles=profiles,
-        l000=current,
-    )
+    l000 = current
     curve = [
         _evaluate_version(
             run_dir,
@@ -617,10 +848,11 @@ def run_batch_experiment(args: argparse.Namespace) -> tuple[Path, dict[str, Any]
                 run_dir / "learning_steps" / f"{step_index:02d}_{profile_id}",
                 provider=provider,
                 config=config,
+                profiles=profiles,
+                tactic=tactic,
                 profile=profile,
                 parent=current,
                 store=store,
-                validation_cases=cases_by_tactic[tactic],
                 next_version_number=promotions + 1,
             )
             outcomes.append(outcome)
@@ -646,6 +878,19 @@ def run_batch_experiment(args: argparse.Namespace) -> tuple[Path, dict[str, Any]
                 )
             )
     _write_curve(run_dir / "growth_curve.csv", curve)
+    ablation = (
+        _run_ablation(
+            run_dir,
+            provider=provider,
+            config=config,
+            profiles=profiles,
+            l000=l000,
+            outcomes=outcomes,
+            growth_curve=curve,
+        )
+        if config.get("run_ablations", True)
+        else {}
+    )
     baseline = curve[0]
     final = curve[-1]
     report = {
@@ -672,6 +917,7 @@ def run_batch_experiment(args: argparse.Namespace) -> tuple[Path, dict[str, Any]
         "checkpoints": checkpoints,
         "learning_outcomes": outcomes,
         "growth_curve": curve,
+        "ablation": ablation,
     }
     _write_json(run_dir / "report.json", report)
     return run_dir, report
@@ -699,6 +945,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--derivation-limit", type=int, default=4)
     parser.add_argument("--validation-limit", type=int, default=2)
     parser.add_argument("--evaluation-limit", type=int, default=4)
+    parser.add_argument(
+        "--skip-ablation",
+        action="store_true",
+        help="skip the four final experiment arms during development",
+    )
     parser.add_argument(
         "--output-root", type=Path, default=root / "outputs/agenticpay_v2_batch"
     )
