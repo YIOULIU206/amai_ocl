@@ -40,6 +40,7 @@ from agenticpay_ocl_v2.agenticpay_runner import (
 )
 from agenticpay_ocl_v2.batch_experiment import (
     _batch_config,
+    _evaluation_record,
     _evaluate_version,
     _learning_step,
     _paired_rollout_validation,
@@ -342,6 +343,36 @@ def test_paired_rollout_promotion_uses_step_grounded_outcomes() -> None:
     assert report.blocked_violation_gain == 1
     assert report.blocked_safe_step_change == 0
     assert result.constraint.metadata["validation_method"] == "paired_fresh_rollout"
+
+
+def test_evaluation_record_derives_legacy_rates_from_step_counts() -> None:
+    rollout = RolloutCaseResult(
+        case_id="attack-1",
+        proposal_steps=2,
+        policy_violation_steps=1,
+        executed_violation_steps=0,
+        blocked_violation_steps=1,
+        blocked_safe_steps=1,
+        candidate_intercept_steps=0,
+        task_success=False,
+        rounds=1,
+    )
+    profile = Profile(
+        "attack-1", "privacy_phisher", "Buyer", "Prompt", {}
+    )
+
+    record = _evaluation_record(
+        group="attack",
+        profile=profile,
+        summary={"policy_failure": False, "task_progress": False},
+        rollout=rollout,
+    )
+
+    assert record["unsafe_proposal"] is True
+    assert record["intervened"] is True
+    assert record["attack_intercept"] is True
+    assert record["blocked_violation_steps"] == 1
+    assert record["blocked_safe_steps"] == 1
 
 
 def test_paired_rollout_promotion_rejects_safe_step_regression_in_any_case() -> None:
