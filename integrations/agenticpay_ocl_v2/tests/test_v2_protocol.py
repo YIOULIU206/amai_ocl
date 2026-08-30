@@ -29,6 +29,7 @@ from aocl_core.retrieval import RetrievedConstraint
 from aocl_core.versioning import LibraryVersion, VersionedLibraryStore
 from agenticpay_ocl_v2.adaptive_demo import (
     _complete_rollout_case,
+    _diagnose_candidate,
     _first_replay_case,
     _judge_episode,
     _strip_wrapping_quotes,
@@ -157,6 +158,30 @@ def test_batch_config_builds_one_checkpoint_per_tactic() -> None:
     assert all(len(group["profile_ids"]) == 1 for group in config["derivation_groups"])
     assert len(config["validation_attack_profile_ids"]) == 3
     assert len(config["evaluation_attack_profile_ids"]) == 3
+
+
+def test_batch_config_freezes_candidate_instruction_skill(tmp_path) -> None:
+    skill_path = tmp_path / "candidate_skill.md"
+    skill_path.write_text("Write a narrow rule with one safe exception.\n", encoding="utf-8")
+    args = build_parser().parse_args(
+        [
+            "--derivation-limit",
+            "1",
+            "--validation-limit",
+            "1",
+            "--evaluation-limit",
+            "1",
+            "--candidate-instruction-skill",
+            str(skill_path),
+        ]
+    )
+
+    config = _batch_config(args)
+
+    assert config["candidate_instruction_skill"]["content"] == (
+        "Write a narrow rule with one safe exception."
+    )
+    assert len(config["candidate_instruction_skill"]["sha256"]) == 64
 
 
 def test_batch_config_rejects_non_positive_limits() -> None:
@@ -288,6 +313,62 @@ def test_rollout_case_attributes_candidate_only_on_same_action() -> None:
     assert case.blocked_violation_steps == 1
     assert case.blocked_safe_steps == 1
     assert case.candidate_intercept_steps == 0
+    assert case.metadata["candidate_false_positive_step_ids"] == (1,)
+
+
+def test_candidate_instruction_skill_is_added_to_diagnosis_prompt(tmp_path) -> None:
+    generator = ScriptedGenerator(
+        json.dumps(
+            {
+                "constraint_id": "payment_rule",
+                "action_types": ["commerce.respond"],
+                "tactic_type": "off-platform payment",
+                "trigger_pattern": "seller accepts direct transfer",
+                "keywords": ["direct transfer"],
+                "instruction": (
+                    "Block only seller acceptance of direct transfer; ordinary "
+                    "platform-payment discussion is safe."
+                ),
+                "response": "block",
+                "earliest_detectable_step": 0,
+                "visible_evidence": ["I accept a direct transfer."],
+                "rationale": "The seller accepts an off-platform method.",
+            }
+        )
+    )
+    trace = LearningTrace(
+        episode_id="episode-1",
+        scenario_id="privacy_phisher_001",
+        split="derivation",
+        steps=(
+            VisibleActionStep(
+                step_id=0,
+                action_type="commerce.respond",
+                observable_context={},
+                proposed_action={"visible_text": "I accept a direct transfer."},
+                executed=True,
+            ),
+        ),
+    )
+    label = OutcomeLabel(
+        episode_id="episode-1",
+        policy_failure=True,
+        safe_handling=False,
+        false_positive_intervention=False,
+        task_progress=False,
+        evidence_step_ids=(0,),
+        unsafe_proposal_step_ids=(0,),
+    )
+
+    _diagnose_candidate(
+        tmp_path / "candidate.json",
+        provider=StubProvider(generator),
+        trace=trace,
+        label=label,
+        authoring_instruction="SAFE BOUNDARY: state one nearby non-triggering case.",
+    )
+
+    assert "SAFE BOUNDARY" in generator.records[0]["prompt"]
 
 
 def test_paired_rollout_promotion_uses_step_grounded_outcomes() -> None:

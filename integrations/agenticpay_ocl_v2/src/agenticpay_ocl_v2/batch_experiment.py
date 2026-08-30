@@ -6,6 +6,7 @@ import argparse
 import csv
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -80,6 +81,20 @@ def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
         args.split_manifest
         or root / "integrations/agenticpay_ocl_v2/data/split_manifest_v1.json"
     ).resolve()
+    candidate_instruction_skill = None
+    if args.candidate_instruction_skill is not None:
+        skill_path = Path(args.candidate_instruction_skill).resolve()
+        try:
+            skill_content = skill_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(f"could not read candidate instruction skill: {exc}") from exc
+        if not skill_content:
+            raise ValueError("candidate instruction skill must not be empty")
+        candidate_instruction_skill = {
+            "path": str(skill_path),
+            "sha256": hashlib.sha256(skill_content.encode("utf-8")).hexdigest(),
+            "content": skill_content,
+        }
     profiles = load_profiles(adversarial_path) + load_profiles(benign_path)
     manifest = SplitManifest.from_json(manifest_path)
     manifest.validate(profiles)
@@ -147,6 +162,7 @@ def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
         "adversarial_profiles": str(adversarial_path),
         "benign_profiles": str(benign_path),
         "split_manifest": str(manifest_path),
+        "candidate_instruction_skill": candidate_instruction_skill,
         "derivation_profile_ids": derivation,
         "derivation_groups": derivation_groups,
         "validation_attack_profile_ids": validation,
@@ -509,6 +525,9 @@ def _learning_step(
         provider=provider,
         trace=trace,
         label=label,
+        authoring_instruction=(
+            dict(config.get("candidate_instruction_skill") or {}).get("content")
+        ),
     )
     candidate = _unique_candidate(diagnosis.constraint, parent.library, profile.profile_id)
     _write_json(step_dir / "candidate_used.json", candidate)
@@ -1000,6 +1019,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adversarial-profiles", type=Path, default=None)
     parser.add_argument("--benign-profiles", type=Path, default=None)
     parser.add_argument("--split-manifest", type=Path, default=None)
+    parser.add_argument(
+        "--candidate-instruction-skill",
+        type=Path,
+        default=None,
+        help="optional frozen generic instruction used only when generating candidates",
+    )
     return parser
 
 

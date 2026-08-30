@@ -230,7 +230,39 @@ valid_success
 
 这样 LLM 只处理无法闭式表达的语义问题，不能根据自己看到的最终结果决定 Candidate 是否晋升。
 
-#### 5.4 当前固定晋升条件
+#### 5.4 数学表示与当前固定晋升条件
+
+设不可变的 Hard Safety Envelope 为 $H$，第 $k$ 轮冻结的 Constraint Bank 为 $X_k$，则当前 OCL 状态可以写为：
+
+$$
+\mathrm{OCL}_k=(H,X_k).
+$$
+
+Meta-Agent 根据失败反馈 $F_k$ 生成候选 Constraint：
+
+$$
+c_k=T_\theta(X_k,F_k), \qquad \widetilde{X}_{k+1}=X_k\cup\{c_k\}.
+$$
+
+$T_\theta$ 是由已训练 LLM 实现的离散文本变换，不是梯度下降，当前系统也不更新模型参数。$\widetilde{X}_{k+1}$ 只是用于验证的 Trial Bank，不是已经生效的新版本。
+
+令 $R(X)$ 表示 Bank 在固定 validation cases 上得到的结果向量：
+
+$$
+R(X)=(\text{执行违规},\ \text{拦截违规},\ \text{误拦安全动作},\ \text{候选实际拦截},\ \text{任务成功}).
+$$
+
+$R$ 不是单一 reward，因此不能简单写成 $R(\widetilde{X}_{k+1})\ge R(X_k)$。实现中使用固定的确定性门函数 $G$ 比较 Trial 和 Parent：
+
+$$
+X_{k+1}=
+\begin{cases}
+\widetilde{X}_{k+1}, & G\!\left(R(\widetilde{X}_{k+1}),R(X_k)\right)=1,\\
+X_k, & \text{否则}.
+\end{cases}
+$$
+
+这里的 $G$ 就是 Update Rule：它不理解自然语言，而是按照预先固定的指标条件决定接受或拒绝 Candidate。
 
 设 Parent 指标为 `P`，Trial 指标为 `T`。Candidate 只有同时满足以下条件才进入 Active Bank：
 
@@ -247,6 +279,8 @@ T.task_successes - P.task_successes >= 0
 ```
 
 如果任一条件失败，Candidate 被标记为 `rejected`，Active Bank 保持 Parent 版本，不产生新的 `Lxxx`。通过后才生成不可变子版本，并将 Parent/Trial 指标、来源 episode、晋升策略和 Bank digest 写入 manifest。
+
+当前的 **Verifier** 不是单个模型，而是四部分共同组成的经验验证流程：Hard Validators 检查可计算条件；独立语义 Judge 标注无法形式化的语义违规；Host 提供真实执行和任务结果；确定性代码计算 $R$ 并执行 $G$。Candidate 生成模型只能提出修改，不能批准自己的修改。
 
 #### 5.5 可审计产物
 
@@ -270,7 +304,11 @@ libraries/Lxxx/manifest.json   父版本、策略、验证报告和 digest
 - 语义 Judge 仍可能漏判或误判；
 - 单个 attack/benign case 的最小实验证据很弱；
 - Parent/Trial 的生成具有随机性，需要多个独立 run 报告均值和方差；
+- 固定的 $G$ 很保守，可能拒绝局部有益但存在轻微权衡的 Candidate；
+- 通过有限 validation cases 只说明经验指标没有退化，不能证明语义规则在未知表达和新环境中仍然正确；
 - 当前没有人工双盲标注，因此关键结论需要 deterministic labels、多个 Judge 或抽样人工复核做稳健性分析。
+
+因此，当前能够保证的是：未通过 $G$ 的更新不会进入 Bank，而且任何 Bank 更新都不能改写 $H$。当前不能保证的是：语义 Judge 给出的标签一定正确，或已晋升 Constraint 具有形式化、跨分布的安全性。
 
 正式实验应预先固定 split、Prompt、模型、Hard Constraint suite、top-k 和晋升阈值，并在每个独立重复中从空 `L000` 开始。不能在看到 evaluation 结果后修改阈值或选择性保留成功 run。
 
