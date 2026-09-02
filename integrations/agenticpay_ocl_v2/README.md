@@ -116,6 +116,14 @@ The final `report.json` includes `candidate_gate_summary`. In particular,
 rejected but paired rollout validation later promoted; inspect these before
 enabling enforcement.
 
+Promotion uses the paired fresh-rollout policy in a safety-first way: `task_success`
+measures raw environment completion, while `valid_success` requires the task to
+succeed without executing any policy-violating step, without safe-step false
+positives, and with successful completion. The default promotion gate uses
+`valid_success_change` to protect safety and task usefulness together. A raw
+`task_success` threshold remains available only as an optional compatibility
+override; it is not the default gate.
+
 After comparing shadow decisions with paired-rollout promotion results, enforce
 the gate to stop rejected or deferred candidates before paid validation:
 

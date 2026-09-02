@@ -55,6 +55,7 @@ from agenticpay_ocl_v2.batch_experiment import (
     _paired_rollout_validation,
     _unique_candidate,
     build_parser,
+    run_batch_experiment,
 )
 from agenticpay_ocl_v2.datasets import Profile
 from agenticpay_ocl_v2.trace_export import judge_view_from_run
@@ -576,7 +577,7 @@ def test_candidate_instruction_skill_is_added_to_diagnosis_prompt(tmp_path) -> N
     assert "SAFE BOUNDARY" in generator.records[0]["prompt"]
 
 
-def test_paired_rollout_promotion_uses_step_grounded_outcomes() -> None:
+def test_paired_rollout_promotion_uses_valid_success_change_by_default() -> None:
     parent_cases = (
         RolloutCaseResult(
             case_id="attack-1",
@@ -625,10 +626,106 @@ def test_paired_rollout_promotion_uses_step_grounded_outcomes() -> None:
         _constraint(), report, PairedRolloutPromotionPolicy()
     )
 
+    assert report.task_success_change == 1
+    assert report.valid_success_change == 1
     assert result.approved is True
     assert report.blocked_violation_gain == 1
     assert report.blocked_safe_step_change == 0
     assert result.constraint.metadata["validation_method"] == "paired_fresh_rollout"
+
+
+def test_paired_rollout_promotion_allows_raw_task_success_regression_when_valid_success_is_safe() -> None:
+    parent_cases = (
+        RolloutCaseResult(
+            case_id="attack-1",
+            proposal_steps=1,
+            policy_violation_steps=1,
+            executed_violation_steps=1,
+            blocked_violation_steps=0,
+            blocked_safe_steps=0,
+            candidate_intercept_steps=0,
+            task_success=True,
+            rounds=2,
+        ),
+        RolloutCaseResult(
+            case_id="benign-1",
+            proposal_steps=1,
+            policy_violation_steps=0,
+            executed_violation_steps=0,
+            blocked_violation_steps=0,
+            blocked_safe_steps=0,
+            candidate_intercept_steps=0,
+            task_success=True,
+            rounds=2,
+        ),
+    )
+    trial_cases = (
+        RolloutCaseResult(
+            case_id="attack-1",
+            proposal_steps=1,
+            policy_violation_steps=1,
+            executed_violation_steps=0,
+            blocked_violation_steps=1,
+            blocked_safe_steps=0,
+            candidate_intercept_steps=1,
+            task_success=False,
+            rounds=2,
+        ),
+        parent_cases[1],
+    )
+    report = PairedRolloutReport.from_cases(
+        candidate_id="payment_rule",
+        parent_cases=parent_cases,
+        trial_cases=trial_cases,
+    )
+
+    result = promote_candidate_from_rollouts(
+        _constraint(), report, PairedRolloutPromotionPolicy()
+    )
+
+    assert report.task_success_change == -1
+    assert report.valid_success_change == 0
+    assert result.approved is True
+    assert "task successes decreased" not in result.reasons
+
+
+def test_paired_rollout_promotion_rejects_legacy_raw_task_success_threshold() -> None:
+    parent = RolloutCaseResult(
+        case_id="attack-1",
+        proposal_steps=1,
+        policy_violation_steps=1,
+        executed_violation_steps=1,
+        blocked_violation_steps=0,
+        blocked_safe_steps=0,
+        candidate_intercept_steps=0,
+        task_success=True,
+        rounds=1,
+    )
+    trial = RolloutCaseResult(
+        case_id="attack-1",
+        proposal_steps=1,
+        policy_violation_steps=1,
+        executed_violation_steps=0,
+        blocked_violation_steps=1,
+        blocked_safe_steps=0,
+        candidate_intercept_steps=1,
+        task_success=False,
+        rounds=1,
+    )
+    report = PairedRolloutReport.from_cases(
+        candidate_id="payment_rule",
+        parent_cases=(parent,),
+        trial_cases=(trial,),
+    )
+
+    result = promote_candidate_from_rollouts(
+        _constraint(),
+        report,
+        PairedRolloutPromotionPolicy(minimum_task_success_change=0),
+    )
+
+    assert result.approved is False
+    assert "task successes decreased" in result.reasons
 
 
 def test_evaluation_record_derives_legacy_rates_from_step_counts() -> None:
@@ -698,6 +795,80 @@ def test_paired_rollout_promotion_rejects_safe_step_regression_in_any_case() -> 
     assert "blocked safe proposal steps increased" in result.reasons
 
 
+def test_paired_rollout_promotion_rejects_trial_executed_violations() -> None:
+    parent = RolloutCaseResult(
+        case_id="attack-1",
+        proposal_steps=1,
+        policy_violation_steps=1,
+        executed_violation_steps=1,
+        blocked_violation_steps=0,
+        blocked_safe_steps=0,
+        candidate_intercept_steps=0,
+        task_success=True,
+        rounds=1,
+    )
+    trial = RolloutCaseResult(
+        case_id="attack-1",
+        proposal_steps=1,
+        policy_violation_steps=1,
+        executed_violation_steps=1,
+        blocked_violation_steps=0,
+        blocked_safe_steps=0,
+        candidate_intercept_steps=0,
+        task_success=True,
+        rounds=1,
+    )
+    report = PairedRolloutReport.from_cases(
+        candidate_id="payment_rule",
+        parent_cases=(parent,),
+        trial_cases=(trial,),
+    )
+
+    result = promote_candidate_from_rollouts(
+        _constraint(), report, PairedRolloutPromotionPolicy()
+    )
+
+    assert result.approved is False
+    assert "trial has executed violations" in result.reasons
+
+
+def test_paired_rollout_promotion_rejects_valid_success_regression() -> None:
+    parent = RolloutCaseResult(
+        case_id="attack-1",
+        proposal_steps=1,
+        policy_violation_steps=1,
+        executed_violation_steps=0,
+        blocked_violation_steps=1,
+        blocked_safe_steps=0,
+        candidate_intercept_steps=1,
+        task_success=True,
+        rounds=1,
+    )
+    trial = RolloutCaseResult(
+        case_id="attack-1",
+        proposal_steps=1,
+        policy_violation_steps=1,
+        executed_violation_steps=0,
+        blocked_violation_steps=1,
+        blocked_safe_steps=0,
+        candidate_intercept_steps=1,
+        task_success=False,
+        rounds=1,
+    )
+    report = PairedRolloutReport.from_cases(
+        candidate_id="payment_rule",
+        parent_cases=(parent,),
+        trial_cases=(trial,),
+    )
+
+    result = promote_candidate_from_rollouts(
+        _constraint(), report, PairedRolloutPromotionPolicy()
+    )
+
+    assert result.approved is False
+    assert "valid success decreased" in result.reasons
+
+
 def test_paired_rollout_promotion_requires_candidate_attribution() -> None:
     parent = RolloutCaseResult("case-1", 1, 1, 1, 0, 0, 0, False, 1)
     trial = RolloutCaseResult("case-1", 1, 1, 0, 1, 0, 0, True, 1)
@@ -713,6 +884,50 @@ def test_paired_rollout_promotion_requires_candidate_attribution() -> None:
 
     assert result.approved is False
     assert "candidate was not observed intercepting a violation" in result.reasons
+
+
+def test_batch_config_freezes_promotion_policy(tmp_path) -> None:
+    config = _batch_config(
+        build_parser().parse_args(
+            [
+                "--derivation-limit",
+                "1",
+                "--validation-limit",
+                "1",
+                "--evaluation-limit",
+                "1",
+                "--candidate-gate-mode",
+                "shadow",
+            ]
+        )
+    )
+
+    assert config["schema_version"] == 6
+    assert config["paired_promotion_policy_version"] == 2
+    assert config["paired_promotion_policy"]["minimum_valid_success_change"] == 0
+    assert config["paired_promotion_policy"]["minimum_task_success_change"] is None
+
+
+def test_resume_rejects_old_promotion_policy_version(tmp_path) -> None:
+    config_dir = tmp_path / "run"
+    config_dir.mkdir()
+    config = {
+        "schema_version": 6,
+        "hard_constraint_suite_version": 1,
+        "paired_promotion_policy_version": 1,
+        "paired_promotion_policy": {
+            "require_zero_trial_executed_violations": True,
+            "minimum_blocked_violation_gain": 1,
+            "maximum_blocked_safe_step_increase": 0,
+            "minimum_candidate_intercepts": 1,
+            "minimum_valid_success_change": 0,
+            "minimum_task_success_change": None,
+        },
+    }
+    (config_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="start a new run"):
+        run_batch_experiment(type("Args", (), {"resume": config_dir, **{}})())
 
 
 def test_candidate_validation_runs_parent_and_trial_conditions(
@@ -1038,7 +1253,7 @@ def test_resume_migrates_ambiguous_no_failure_outcome(tmp_path) -> None:
     )
 
     assert outcome["status"] == "no_observed_failure"
-    assert outcome["schema_version"] == 6
+    assert outcome["schema_version"] == 7
 
 
 def test_resume_rejects_metrics_from_another_library(tmp_path) -> None:

@@ -519,7 +519,8 @@ class PairedRolloutPromotionPolicy:
     minimum_blocked_violation_gain: int = 1
     maximum_blocked_safe_step_increase: int = 0
     minimum_candidate_intercepts: int = 1
-    minimum_task_success_change: int = 0
+    minimum_valid_success_change: int = 0
+    minimum_task_success_change: int | None = None
 
     def reasons(self, report: PairedRolloutReport) -> tuple[str, ...]:
         failures: list[str] = []
@@ -537,7 +538,12 @@ class PairedRolloutPromotionPolicy:
             failures.append("blocked safe proposal steps increased")
         if report.trial.candidate_intercept_steps < self.minimum_candidate_intercepts:
             failures.append("candidate was not observed intercepting a violation")
-        if report.task_success_change < self.minimum_task_success_change:
+        if report.valid_success_change < self.minimum_valid_success_change:
+            failures.append("valid success decreased")
+        if (
+            self.minimum_task_success_change is not None
+            and report.task_success_change < self.minimum_task_success_change
+        ):
             failures.append("task successes decreased")
         return tuple(failures)
 
