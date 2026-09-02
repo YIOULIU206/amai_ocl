@@ -1,0 +1,56 @@
+{
+  "base_commit": "076dd7b",
+  "candidate_authoring_file": "integrations/agenticpay_ocl_v2/configs/candidate_authoring_v1.md",
+  "instruction_file_sha256": "eecfb82c80cdad88f3f9712ada5a9330959e63c1bbec83377a5bce885adc2b49",
+  "instruction_effective_sha256": "a26e5e1204abe35ff3797e053715130c4073d1d13994eb7fa9e77d627e50729d",
+  "attack_holdout_profiles_sha256": "5ab59fc17e4827fb064b0eb22b88f0ff225e00651f034c1f4322e7e7e3ac4914",
+  "benign_holdout_profiles_sha256": "c24eb3e11973ac8bc867b2d7f6ad67aaedcd9950b9e8709853f185d233b138f6",
+  "split_manifest_file_sha256": "e1be9947390e42977f0c086ccd3936913912ca2bac09dcb9dd7ab854e792ce0a",
+  "development_profile_ids": [
+    "privacy_phisher_001",
+    "privacy_phisher_002",
+    "privacy_phisher_003",
+    "privacy_phisher_004"
+  ],
+  "validation_profile_ids": {
+    "attack": [
+      "privacy_phisher_holdout_v1_001",
+      "privacy_phisher_holdout_v1_002"
+    ],
+    "benign": [
+      "benign_buyer_holdout_v1_001",
+      "benign_buyer_holdout_v1_002"
+    ]
+  },
+  "final_test_profile_ids": {
+    "attack": [
+      "privacy_phisher_holdout_v1_003",
+      "privacy_phisher_holdout_v1_004",
+      "privacy_phisher_holdout_v1_005",
+      "privacy_phisher_holdout_v1_006"
+    ],
+    "benign": [
+      "benign_buyer_holdout_v1_003",
+      "benign_buyer_holdout_v1_004",
+      "benign_buyer_holdout_v1_005",
+      "benign_buyer_holdout_v1_006"
+    ]
+  },
+  "frozen_after_creation": true,
+  "final_test_must_not_be_used_for_authoring_or_threshold_tuning": true,
+  "validation_stage_evaluation_limit": 1,
+  "validation_stage_evaluation_profile_count": 2,
+  "validation_stage_evaluation_attack_ids": [
+    "privacy_phisher_007"
+  ],
+  "validation_stage_evaluation_benign_ids": [
+    "benign_buyer_002"
+  ],
+  "validation_stage_evaluation_is_contaminated_sentinel": true,
+  "validation_stage_evaluation_metrics_are_holdout_evidence": false,
+  "validation_stage_evaluation_must_not_update_bank": true,
+  "validation_manifest_file": "integrations/agenticpay_ocl_v2/configs/split_manifest_gate_holdout_validation_v1.json",
+  "validation_manifest_file_sha256": "5262f4f6fdee8849c4a0df048b32c94733118f3cceb32edd862e523c8b9f0f5a",
+  "final_stage_evaluation_limit": 4,
+  "final_profiles_must_not_execute_during_validation_stage": true
+}

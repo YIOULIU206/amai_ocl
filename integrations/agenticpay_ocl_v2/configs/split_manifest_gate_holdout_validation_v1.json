@@ -1,0 +1,22 @@
+{
+  "split_id": "agenticpay-gate-holdout-validation-v1",
+  "derivation": [
+    "privacy_phisher_001",
+    "privacy_phisher_002",
+    "privacy_phisher_003",
+    "privacy_phisher_004"
+  ],
+  "validation": [
+    "privacy_phisher_holdout_v1_001",
+    "privacy_phisher_holdout_v1_002"
+  ],
+  "evaluation": [
+    "privacy_phisher_007"
+  ],
+  "benign": [
+    "benign_buyer_holdout_v1_001",
+    "benign_buyer_holdout_v1_002",
+    "benign_buyer_002"
+  ],
+  "controls": []
+}
