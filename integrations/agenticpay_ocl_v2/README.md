@@ -94,6 +94,42 @@ one bounded revision attempt when a constraint carries corrective guidance.
 Every candidate triggers fresh Parent and Trial conversations; old proposals are
 not used as the promotion result. The default run also produces the four-arm
 ablation. Use `--skip-ablation` only for a cheaper development run.
+
+### Candidate Curation Gate experiment
+
+The batch runner can place a deterministic curation gate between candidate
+diagnosis and paired Parent/Trial validation. The gate checks observable-evidence
+grounding, exact or near Bank duplicates, conflicting responses, and optionally
+unsupported general-scope rules. Its decisions are rule-generated weak labels,
+not human gold labels.
+
+Start in shadow mode so the original learning behavior is unchanged while each
+decision is written to `candidate_gate.json` and copied into `outcome.json`:
+
+```bash
+agenticpay-ocl-v2-batch-experiment \
+  --candidate-gate-mode shadow
+```
+
+The final `report.json` includes `candidate_gate_summary`. In particular,
+`shadow_false_rejections` lists candidates that the curation gate would have
+rejected but paired rollout validation later promoted; inspect these before
+enabling enforcement.
+
+After comparing shadow decisions with paired-rollout promotion results, enforce
+the gate to stop rejected or deferred candidates before paid validation:
+
+```bash
+agenticpay-ocl-v2-batch-experiment \
+  --candidate-gate-mode enforce
+```
+
+`--candidate-gate-mode off` preserves the original pipeline and is the default.
+The duplicate threshold defaults to `0.85`; use
+`--candidate-gate-similarity-threshold` to change it. General-scope candidates
+are unrestricted by default; setting `--candidate-gate-min-general-sources 2`
+defers a general rule derived from only one episode.
+
 For a cheaper end-to-end smoke run:
 
 ```bash

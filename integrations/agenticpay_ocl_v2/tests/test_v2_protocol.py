@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
 
+from aocl_core.candidate_gate import (
+    CandidateCurationGate,
+    CandidateGateDecision,
+    CandidateGateReason,
+)
 from aocl_core.contracts import ObservableContext, ProposedAction
 from aocl_core.evaluators import PromptedSemanticConstraintEvaluator
 from aocl_core.learning import (
+    CandidateDiagnosis,
     LearningTrace,
     OutcomeLabel,
     PairedRolloutPromotionPolicy,
@@ -41,6 +48,7 @@ from agenticpay_ocl_v2.agenticpay_runner import (
 )
 from agenticpay_ocl_v2.batch_experiment import (
     _batch_config,
+    _candidate_gate_summary,
     _evaluation_record,
     _evaluate_version,
     _learning_step,
@@ -95,6 +103,138 @@ def _constraint(
     )
 
 
+def _gate_trace() -> LearningTrace:
+    return LearningTrace(
+        episode_id="episode-1",
+        scenario_id="privacy_phisher_001",
+        split="derivation",
+        steps=(
+            VisibleActionStep(
+                step_id=0,
+                action_type="commerce.respond",
+                observable_context={},
+                proposed_action={"visible_text": "I accept a direct bank transfer."},
+                executed=True,
+            ),
+        ),
+    )
+
+
+def _gate_diagnosis(
+    candidate: SoftConstraint,
+    *,
+    evidence: tuple[str, ...] = ("accept a direct bank transfer",),
+) -> CandidateDiagnosis:
+    return CandidateDiagnosis(
+        constraint=candidate,
+        earliest_detectable_step=0,
+        visible_evidence=evidence,
+        rationale="The proposed action facilitates off-platform payment.",
+    )
+
+
+def test_candidate_gate_accepts_novel_grounded_candidate() -> None:
+    candidate = _constraint()
+
+    result = CandidateCurationGate().evaluate(
+        candidate,
+        _gate_diagnosis(candidate),
+        _gate_trace(),
+        FrozenConstraintLibrary(),
+    )
+
+    assert result.decision is CandidateGateDecision.ACCEPT
+    assert result.reason is CandidateGateReason.NOVEL_GROUNDED
+    assert result.evidence_grounded is True
+
+
+def test_candidate_gate_rejects_ungrounded_evidence() -> None:
+    candidate = _constraint()
+
+    result = CandidateCurationGate().evaluate(
+        candidate,
+        _gate_diagnosis(candidate, evidence=("send the password",)),
+        _gate_trace(),
+        FrozenConstraintLibrary(),
+    )
+
+    assert result.decision is CandidateGateDecision.REJECT
+    assert result.reason is CandidateGateReason.EVIDENCE_NOT_GROUNDED
+
+
+def test_candidate_gate_rejects_exact_duplicate_before_id_renaming() -> None:
+    candidate = _constraint("new_payment_rule")
+    existing = _constraint("existing_payment_rule", status=ConstraintStatus.APPROVED)
+
+    result = CandidateCurationGate().evaluate(
+        candidate,
+        _gate_diagnosis(candidate),
+        _gate_trace(),
+        FrozenConstraintLibrary((existing,)),
+    )
+
+    assert result.decision is CandidateGateDecision.REJECT
+    assert result.reason is CandidateGateReason.EXACT_DUPLICATE
+    assert result.matched_constraint_ids == ("existing_payment_rule",)
+
+
+def test_candidate_gate_rejects_near_duplicate_with_same_response() -> None:
+    candidate = replace(
+        _constraint("new_payment_rule"),
+        instruction="Block off-platform payment facilitation immediately.",
+    )
+    existing = _constraint("existing_payment_rule", status=ConstraintStatus.APPROVED)
+
+    result = CandidateCurationGate(
+        semantic_duplicate_threshold=0.8
+    ).evaluate(
+        candidate,
+        _gate_diagnosis(candidate),
+        _gate_trace(),
+        FrozenConstraintLibrary((existing,)),
+    )
+
+    assert result.decision is CandidateGateDecision.REJECT
+    assert result.reason is CandidateGateReason.SEMANTIC_DUPLICATE
+
+
+def test_candidate_gate_defers_similar_rule_with_conflicting_response() -> None:
+    candidate = _constraint("new_payment_rule")
+    existing = replace(
+        _constraint("existing_payment_rule", status=ConstraintStatus.APPROVED),
+        response=ConstraintResponse.REVISE,
+    )
+
+    result = CandidateCurationGate().evaluate(
+        candidate,
+        _gate_diagnosis(candidate),
+        _gate_trace(),
+        FrozenConstraintLibrary((existing,)),
+    )
+
+    assert result.decision is CandidateGateDecision.DEFER
+    assert result.reason is CandidateGateReason.BANK_CONFLICT
+
+
+def test_candidate_gate_can_defer_single_episode_generalization() -> None:
+    candidate = replace(
+        _constraint("general_payment_rule"),
+        metadata={"scope": "general"},
+    )
+
+    result = CandidateCurationGate(
+        minimum_general_source_episodes=2
+    ).evaluate(
+        candidate,
+        _gate_diagnosis(candidate),
+        _gate_trace(),
+        FrozenConstraintLibrary(),
+    )
+
+    assert result.decision is CandidateGateDecision.DEFER
+    assert result.reason is CandidateGateReason.OVERGENERALIZED
+
+
 def _run_result(*, executed: bool) -> AgenticPayRunResult:
     proposed = "You can type your credit card number here."
     return AgenticPayRunResult(
@@ -138,6 +278,71 @@ def test_batch_config_keeps_all_experiment_splits_disjoint() -> None:
 
     for index, group in enumerate(groups):
         assert all(not group.intersection(other) for other in groups[index + 1 :])
+
+
+def test_batch_config_freezes_candidate_gate_settings() -> None:
+    args = build_parser().parse_args(
+        [
+            "--derivation-limit",
+            "1",
+            "--validation-limit",
+            "1",
+            "--evaluation-limit",
+            "1",
+            "--candidate-gate-mode",
+            "shadow",
+            "--candidate-gate-similarity-threshold",
+            "0.9",
+            "--candidate-gate-min-general-sources",
+            "2",
+        ]
+    )
+
+    config = _batch_config(args)
+
+    assert config["candidate_gate"] == {
+        "mode": "shadow",
+        "semantic_duplicate_threshold": 0.9,
+        "minimum_general_source_episodes": 2,
+    }
+
+
+def test_candidate_gate_summary_exposes_shadow_false_rejections() -> None:
+    summary = _candidate_gate_summary(
+        (
+            {
+                "profile_id": "privacy_phisher_001",
+                "status": "candidate_rejected",
+                "candidate_gate": {
+                    "mode": "shadow",
+                    "candidate_id": "duplicate",
+                    "decision": "reject",
+                    "reason": "semantic_duplicate",
+                },
+            },
+            {
+                "profile_id": "privacy_phisher_002",
+                "status": "promoted",
+                "candidate_gate": {
+                    "mode": "shadow",
+                    "candidate_id": "useful_rule",
+                    "decision": "reject",
+                    "reason": "evidence_not_grounded",
+                },
+            },
+        )
+    )
+
+    assert summary["shadow_rejections_checked"] == 2
+    assert summary["shadow_rejections_confirmed"] == 1
+    assert summary["shadow_rejection_precision"] == 0.5
+    assert summary["shadow_false_rejections"] == [
+        {
+            "profile_id": "privacy_phisher_002",
+            "candidate_id": "useful_rule",
+            "reason": "evidence_not_grounded",
+        }
+    ]
 
 
 def test_batch_config_builds_one_checkpoint_per_tactic() -> None:
@@ -833,7 +1038,7 @@ def test_resume_migrates_ambiguous_no_failure_outcome(tmp_path) -> None:
     )
 
     assert outcome["status"] == "no_observed_failure"
-    assert outcome["schema_version"] == 5
+    assert outcome["schema_version"] == 6
 
 
 def test_resume_rejects_metrics_from_another_library(tmp_path) -> None:

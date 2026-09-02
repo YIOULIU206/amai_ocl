@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from aocl_core.candidate_gate import CandidateCurationGate, CandidateGateDecision
 from aocl_core.json_utils import jsonable
 from aocl_core.learning import (
     PairedRolloutPromotionPolicy,
@@ -43,7 +44,7 @@ from .datasets import Profile, SplitManifest, load_profiles
 from .trace_export import learning_trace_from_run
 
 
-LEARNING_OUTCOME_SCHEMA = 5
+LEARNING_OUTCOME_SCHEMA = 6
 PAIRED_VALIDATION_SCHEMA = 3
 DEFAULT_TACTICS = ("privacy_phisher", "role_hijacker", "time_waster")
 TACTIC_POLICIES = {
@@ -69,6 +70,14 @@ def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--max-rounds must be greater than zero")
     if args.maximum_revision_attempts < 0:
         raise ValueError("--maximum-revision-attempts must be non-negative")
+    if not 0.0 <= args.candidate_gate_similarity_threshold <= 1.0:
+        raise ValueError(
+            "--candidate-gate-similarity-threshold must be between zero and one"
+        )
+    if args.candidate_gate_min_general_sources <= 0:
+        raise ValueError(
+            "--candidate-gate-min-general-sources must be greater than zero"
+        )
     root = _repo_root()
     adversarial_path = Path(
         args.adversarial_profiles or root / "configs/adversarial_buyers.json"
@@ -146,7 +155,7 @@ def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
             f"need {benign_needed} benign profiles, found {len(manifest.benign)}"
         )
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model": args.model,
         "api_key_env": args.api_key_env,
@@ -163,6 +172,15 @@ def _batch_config(args: argparse.Namespace) -> dict[str, Any]:
         "benign_profiles": str(benign_path),
         "split_manifest": str(manifest_path),
         "candidate_instruction_skill": candidate_instruction_skill,
+        "candidate_gate": {
+            "mode": args.candidate_gate_mode,
+            "semantic_duplicate_threshold": (
+                args.candidate_gate_similarity_threshold
+            ),
+            "minimum_general_source_episodes": (
+                args.candidate_gate_min_general_sources
+            ),
+        },
         "derivation_profile_ids": derivation,
         "derivation_groups": derivation_groups,
         "validation_attack_profile_ids": validation,
@@ -529,6 +547,48 @@ def _learning_step(
             dict(config.get("candidate_instruction_skill") or {}).get("content")
         ),
     )
+    gate_config = dict(config.get("candidate_gate") or {})
+    gate_mode = str(gate_config.get("mode", "off"))
+    gate_artifact: dict[str, Any] | None = None
+    if gate_mode != "off":
+        if gate_mode not in {"shadow", "enforce"}:
+            raise ValueError(f"invalid candidate gate mode: {gate_mode}")
+        gate = CandidateCurationGate(
+            semantic_duplicate_threshold=float(
+                gate_config.get("semantic_duplicate_threshold", 0.85)
+            ),
+            minimum_general_source_episodes=int(
+                gate_config.get("minimum_general_source_episodes", 1)
+            ),
+        )
+        gate_result = gate.evaluate(
+            diagnosis.constraint,
+            diagnosis,
+            trace,
+            parent.library,
+        )
+        gate_artifact = {"mode": gate_mode, **jsonable(gate_result)}
+        _write_json(step_dir / "candidate_gate.json", gate_artifact)
+        if (
+            gate_mode == "enforce"
+            and gate_result.decision is not CandidateGateDecision.ACCEPT
+        ):
+            outcome = {
+                "schema_version": LEARNING_OUTCOME_SCHEMA,
+                "profile_id": profile.profile_id,
+                "status": (
+                    "candidate_rejected_by_gate"
+                    if gate_result.decision is CandidateGateDecision.REJECT
+                    else "candidate_deferred_by_gate"
+                ),
+                "parent_version": parent.version_id,
+                "version_id": parent.version_id,
+                "reasons": (gate_result.reason.value,),
+                "candidate": diagnosis.constraint.to_dict(),
+                "candidate_gate": gate_artifact,
+            }
+            _write_json(outcome_path, outcome)
+            return outcome
     candidate = _unique_candidate(diagnosis.constraint, parent.library, profile.profile_id)
     _write_json(step_dir / "candidate_used.json", candidate)
     report = _paired_rollout_validation(
@@ -555,6 +615,8 @@ def _learning_step(
             "candidate": candidate.to_dict(),
             "paired_validation": jsonable(report),
         }
+        if gate_artifact is not None:
+            outcome["candidate_gate"] = gate_artifact
         _write_json(outcome_path, outcome)
         return outcome
     version_id = f"L{next_version_number:03d}"
@@ -581,6 +643,8 @@ def _learning_step(
         "paired_validation": jsonable(report),
         "library_digest": child.library.digest,
     }
+    if gate_artifact is not None:
+        outcome["candidate_gate"] = gate_artifact
     _write_json(outcome_path, outcome)
     return outcome
 
@@ -802,6 +866,65 @@ def _unvalidated_library(outcomes: Sequence[Mapping[str, Any]]) -> FrozenConstra
     return library
 
 
+def _candidate_gate_summary(
+    outcomes: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate curation decisions without treating them as gold labels."""
+
+    decision_counts = {decision: 0 for decision in ("accept", "reject", "defer")}
+    reason_counts: dict[str, int] = {}
+    shadow_rollout_outcomes = {
+        decision: {"promoted": 0, "candidate_rejected": 0}
+        for decision in decision_counts
+    }
+    shadow_false_rejections: list[dict[str, str]] = []
+    enforced_stops = 0
+    evaluated = 0
+    for outcome in outcomes:
+        artifact = outcome.get("candidate_gate")
+        if not isinstance(artifact, Mapping):
+            continue
+        decision = str(artifact.get("decision", ""))
+        reason = str(artifact.get("reason", ""))
+        mode = str(artifact.get("mode", ""))
+        if decision not in decision_counts or not reason:
+            continue
+        evaluated += 1
+        decision_counts[decision] += 1
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        status = str(outcome.get("status", ""))
+        if status in {"candidate_rejected_by_gate", "candidate_deferred_by_gate"}:
+            enforced_stops += 1
+        if mode != "shadow" or status not in {"promoted", "candidate_rejected"}:
+            continue
+        shadow_rollout_outcomes[decision][status] += 1
+        if decision == "reject" and status == "promoted":
+            shadow_false_rejections.append(
+                {
+                    "profile_id": str(outcome.get("profile_id", "")),
+                    "candidate_id": str(artifact.get("candidate_id", "")),
+                    "reason": reason,
+                }
+            )
+    checked_rejections = sum(shadow_rollout_outcomes["reject"].values())
+    confirmed_rejections = shadow_rollout_outcomes["reject"]["candidate_rejected"]
+    return {
+        "evaluated_candidates": evaluated,
+        "decision_counts": decision_counts,
+        "reason_counts": reason_counts,
+        "shadow_rollout_outcomes": shadow_rollout_outcomes,
+        "shadow_rejections_checked": checked_rejections,
+        "shadow_rejections_confirmed": confirmed_rejections,
+        "shadow_rejection_precision": (
+            confirmed_rejections / checked_rejections
+            if checked_rejections
+            else None
+        ),
+        "shadow_false_rejections": shadow_false_rejections,
+        "enforced_validation_calls_skipped": enforced_stops,
+    }
+
+
 def _run_ablation(
     run_dir: Path,
     *,
@@ -978,6 +1101,7 @@ def run_batch_experiment(args: argparse.Namespace) -> tuple[Path, dict[str, Any]
         },
         "checkpoints": checkpoints,
         "learning_outcomes": outcomes,
+        "candidate_gate_summary": _candidate_gate_summary(outcomes),
         "growth_curve": curve,
         "ablation": ablation,
     }
@@ -1024,6 +1148,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="optional frozen generic instruction used only when generating candidates",
+    )
+    parser.add_argument(
+        "--candidate-gate-mode",
+        choices=("off", "shadow", "enforce"),
+        default="off",
+        help=(
+            "off preserves the original pipeline; shadow logs gate decisions; "
+            "enforce stops rejected or deferred candidates before rollout validation"
+        ),
+    )
+    parser.add_argument(
+        "--candidate-gate-similarity-threshold",
+        type=float,
+        default=0.85,
+        help="Jaccard threshold used to detect near-duplicate bank entries",
+    )
+    parser.add_argument(
+        "--candidate-gate-min-general-sources",
+        type=int,
+        default=1,
+        help="minimum distinct source episodes required for a general-scope candidate",
     )
     return parser
 

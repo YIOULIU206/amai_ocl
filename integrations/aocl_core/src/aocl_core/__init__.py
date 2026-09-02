@@ -1,6 +1,12 @@
 """Environment-independent Adaptive Organizational Control Layer."""
 
 from .audit import AuditEvent, InMemoryAuditSink, JsonlAuditSink
+from .candidate_gate import (
+    CandidateCurationGate,
+    CandidateGateDecision,
+    CandidateGateReason,
+    CandidateGateResult,
+)
 from .contracts import (
     CheckLevel,
     CheckResult,
@@ -25,6 +31,10 @@ from .runtime import IntegrationOCLRuntime
 
 __all__ = [
     "AuditEvent",
+    "CandidateCurationGate",
+    "CandidateGateDecision",
+    "CandidateGateReason",
+    "CandidateGateResult",
     "CheckLevel",
     "CheckResult",
     "ConstraintResponse",
