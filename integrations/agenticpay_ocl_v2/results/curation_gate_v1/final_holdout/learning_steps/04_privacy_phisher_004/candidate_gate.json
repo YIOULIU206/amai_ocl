@@ -1,0 +1,11 @@
+{
+  "candidate_id": "C-PRIV-001",
+  "decision": "accept",
+  "evidence_grounded": true,
+  "gate_version": 1,
+  "label_source": "deterministic_rules_v1",
+  "matched_constraint_ids": [],
+  "max_similarity": 0.0,
+  "mode": "shadow",
+  "reason": "novel_grounded"
+}
